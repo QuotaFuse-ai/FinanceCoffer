@@ -1,7 +1,7 @@
 # TickHub 侧改造方案（CN 内嵌钩子 / US 外挂采集器）
 
-版本：v0.1（2026-10-26）
-上游契约：`docs/specs/event-contract.md` v0.2
+版本：v0.2（2026-10-27）
+上游契约：`docs/specs/event-contract.md` v0.3
 边界：FinanceCoffer 只消费，不做调度、不抓取、不回查上游库。
 
 ## 1. 总体结构
@@ -196,7 +196,7 @@ FC_EVENT_REDIS_URL="redis://127.0.0.1:6379/1"
 
 ### 5.1 形态
 
-独立进程（建议单独仓库 `quotafuse-tasks` 或 `scripts/us_collector.py`），不修改 TickHub-US：
+独立进程，代码放在 TickHub-US 仓库内的 `us_collector/`（不修改仓库既有代码）：
 
 ```text
 us_collector/
@@ -204,10 +204,12 @@ us_collector/
   collector.py     # MCP HTTP 调用 + 事件组装
   publisher.py     # 与 CN 共用逻辑（可复制）
   outbox.py        # SQLite
-  config.yaml      # 股票池、工具、cron、compliance
+  config.yaml      # 股票池、工具、cron、compliance（随包发布，--config 省略时默认读它）
 ```
 
-依赖：`mcp`（客户端）、`apscheduler`、`redis`、`pyyaml`。**不要**依赖 `tickhub_us` 的导入路径。
+依赖：`mcp`（客户端）、`apscheduler`、`redis`、`pyyaml`、`tzdata`。**不要**依赖 `tickhub_us` 的导入路径。
+
+启动入口：安装后 `th-us-collector`（`[project.scripts] us_collector.scheduler:main`），源码态 `python -m us_collector.scheduler`；两者退出码一致（锁冲突 2）。
 
 ### 5.2 调度
 
