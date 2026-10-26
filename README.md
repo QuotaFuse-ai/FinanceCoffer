@@ -2,7 +2,7 @@
 
 FinanceCoffer（金融数据金库）是面向 AI Agent 的大规模金融数仓与混合检索引擎。它消费 TickHub-CN / TickHub-US（原 QuotaFuse StockData）采集并校验后的标准事件，完成 ODS / DWD / DWS / 向量四层落库，并通过 MCP 与 CLI 向 AI 提供「可回溯、带出处、带质量标记」的结构化与语义检索能力。
 
-> 状态：**设计与清单阶段（v0.1）**。仓库当前只包含规格、决策、任务拆解与目录骨架，尚未开始编码。
+> 状态：**S1 基线（v0.1）**。T-001 工程骨架已落地：可安装的 `financecoffer` 包、`fcoffer` 命令树、配置加载、错误码、结构化日志与统一返回信封；业务命令仍为占位实现，调用返回 `E_NOT_IMPLEMENTED`，由后续任务填充。
 > 需求来源：`新建 DOCX 文档.docx` 中的《QuotaFuse Vault 完整开发文档（v1.0）》，按客户要求全部更名为 FinanceCoffer。
 
 ## 1. 定位与边界
@@ -19,7 +19,27 @@ FinanceCoffer（金融数据金库）是面向 AI Agent 的大规模金融数仓
 3. **不覆盖历史**：DWD 强制版本快照，`MAX(version)` 为最新。
 4. **安全检索**：向量检索必须带 `symbol` 等前置过滤，禁止无过滤全表扫描。
 
-## 2. 总体数据流
+## 2. 快速开始（T-001 骨架）
+
+要求 Python 3.11+。
+
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate    Linux/macOS: source .venv/bin/activate
+pip install -e ".[dev]"
+
+fcoffer --version        # fcoffer 0.1.0
+fcoffer --help           # 命令树与 docs/specs/cli.md 的 P0 一致
+python -m pytest         # 骨架单测
+```
+
+当前所有业务命令都是占位符，例如 `fcoffer doctor` / `fcoffer etl consume` 会返回 `E_NOT_IMPLEMENTED` 信封并以退出码 1 结束，由后续任务实现（见 `docs/tasks/TASK-000-plan/plan.md`）。
+
+配置按 **内置默认值 → `.env` → 进程环境变量 → 显式参数** 的优先级加载，只读取 `FC_*` 变量，模板见 [`.env.example`](.env.example)。密钥字段使用 `SecretStr`，日志与 `fcoffer config show` 会脱敏连接串口令。
+
+可选依赖按需安装：`pip install -e ".[db]"`、`.[api]`、`.[vector]`、`.[minio]`、`.[mcp]`、`.[etl]`、`.[admin]`，或 `.[all]`。
+
+## 3. 总体数据流
 
 ```text
 [TickHub-CN / TickHub-US]
@@ -37,7 +57,7 @@ FinanceCoffer（金融数据金库）是面向 AI Agent 的大规模金融数仓
   关系型过滤 + 向量距离的混合检索
 ```
 
-## 3. 数仓分层
+## 4. 数仓分层
 
 | 层 | Schema / 表 | 关键规则 |
 | --- | --- | --- |
@@ -51,7 +71,7 @@ FinanceCoffer（金融数据金库）是面向 AI Agent 的大规模金融数仓
 
 > 冷热分离：近 3 年热数据留在 PG；3 年以上及 >8KB 文本/PDF 转存 MinIO，DWD 置 `is_cold=true` 并清空大字段。
 
-## 4. 对外接口
+## 5. 对外接口
 
 ### MCP 工具（严格按文档，首期 3 个）
 
@@ -78,7 +98,7 @@ fcoffer query risk --symbol 600000
 
 完整命令树见 [`docs/specs/cli.md`](docs/specs/cli.md)。
 
-## 5. 命名
+## 6. 命名
 
 从 QuotaFuse Vault 全量更名为 FinanceCoffer：
 
@@ -95,7 +115,7 @@ fcoffer query risk --symbol 600000
 
 完整映射与理由见 [`docs/specs/naming.md`](docs/specs/naming.md) 与 [`docs/decisions/DEC-0001-rename-to-financecoffer.md`](docs/decisions/DEC-0001-rename-to-financecoffer.md)。
 
-## 6. 目录结构
+## 7. 目录结构
 
 ```text
 FinanceCoffer/
@@ -105,15 +125,25 @@ FinanceCoffer/
 │   ├── decisions/       # 决策记录（只增不改）
 │   ├── tasks/           # 任务产出
 │   └── multica-handover/# 接手报告（只读）
-├── src/financecoffer/   # Python 包（待实现）
-├── tests/               # 契约 / 集成 / 安全测试（待实现）
-├── config/              # 运行时配置（待实现）
+├── pyproject.toml        # 发行名 financecoffer，入口 fcoffer
+├── .env.example          # FC_* 配置模板（无真实凭据）
+├── docs/
+│   ├── specs/           # 产品规格、命名、CLI、包名、参考对比、需求追踪
+│   ├── decisions/       # 决策记录（只增不改）
+│   ├── tasks/           # 任务产出（TASK-000 计划、TASK-001 骨架）
+│   └── multica-handover/# 接手报告（只读）
+├── src/financecoffer/
+│   ├── cli/             # Typer 命令树（P0 占位命令）
+│   ├── core/            # 配置模型、错误码、日志、返回信封
+│   └── config/          # 配置加载（默认值 → .env → 环境变量 → 显式参数）
+├── tests/unit/          # 骨架单测（配置 / 信封 / 错误码 / 日志 / CLI）
+├── config/              # 运行时配置目录（预留）
 ├── scripts/             # 运维脚本（待实现）
 ├── skills/financecoffer/# Agent Skill（SKILL.md）
 └── deploy/              # Docker Compose / 部署清单（待实现）
 ```
 
-## 7. 参考仓库对比结论
+## 8. 参考仓库对比结论
 
 | 项 | TickHub-CN | TickHub-US | FinanceCoffer |
 | --- | --- | --- | --- |
@@ -126,7 +156,7 @@ FinanceCoffer/
 
 **最重要的发现**：文档 4.1 假设 StockData 会向 Redis Stream 抛事件，但当前 TickHub-CN 与 TickHub-US 都没有事件发布能力；CN 只有盘后 SQLite 归档，US 只有缓存。FinanceCoffer 无法在「只存不算」的边界内直接拿到数据。详见 [`docs/specs/reference-readme-comparison.md`](docs/specs/reference-readme-comparison.md)。
 
-## 8. 文档索引
+## 9. 文档索引
 
 - [产品规格](docs/specs/financecoffer.md)
 - [命名规范](docs/specs/naming.md)
@@ -137,8 +167,10 @@ FinanceCoffer/
 - [事件契约](docs/specs/event-contract.md)
 - [TickHub 侧改造方案](docs/specs/tickhub-integration.md)
 - [实施计划](docs/tasks/TASK-000-plan/plan.md)
+- [T-001 工程骨架交付说明](docs/tasks/TASK-001/README.md)
 - [决策记录](docs/decisions/)
+- [DEC-0007 返回信封与错误码](docs/decisions/DEC-0007-envelope-and-error-codes.md)
 
-## 9. 许可与免责
+## 10. 许可与免责
 
 代码计划采用 Apache-2.0。FinanceCoffer 只分发代码与存储结构，不分发行情数据；数据合规义务由上游数据源与使用方承担。
