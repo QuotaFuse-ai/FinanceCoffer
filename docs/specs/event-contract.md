@@ -41,8 +41,8 @@
 | `provider` | string | 是 | 例如 `eastmoney` / `sec_edgar` |
 | `crawl_url` | string | 否 | 原始地址，落 ODS 便于回溯 |
 | `crawl_time` | string | 否 | RFC3339 |
-| `compliance_tier` | string | 否 | 复用 TickHub-US 的 `S/B/C/D/X`；CN 数据统一记 `C`（DEC-0008） |
-| `commercial_use` | bool | 否 | 是否允许商用；CN / US 数据事件均为 `false`（DEC-0006 / DEC-0008），D 级数据落库后查询端默认屏蔽 |
+| `compliance_tier` | string | 否 | 复用 TickHub-US 的 `S/B/C/D/X`；CN 数据统一记 `C`（DEC-0009） |
+| `commercial_use` | bool | 否 | 是否允许商用；CN / US 数据事件均为 `false`（DEC-0006 / DEC-0009），D 级数据落库后查询端默认屏蔽 |
 
 ### 2.2 发布端要求（上游必须满足）
 
@@ -305,7 +305,7 @@
 
 1. G-01：业务方已确认走 A（TickHub 侧发布、Vault 只消费），待 TickHub 侧排期与实现。
 2. G-02：`financial` / `kline` / `quote` / `risk` 事件样例需 TickHub 团队确认字段口径。
-3. G-10：已确认（DEC-0008）——CN 数据事件统一输出 `compliance_tier=C` 与 `commercial_use=false`，与 DEC-0006 的「个人研究级、仅内部使用」一致；`heartbeat` 不承载上游数据，维持只写 `provider`。
+3. G-10：已确认（DEC-0009）——CN 数据事件统一输出 `compliance_tier=C` 与 `commercial_use=false`，与 DEC-0006 的「个人研究级、仅内部使用」一致；`heartbeat` 不承载上游数据，维持只写 `provider`。
 4. G-11：大文本走 MinIO 的引用格式（`minio://bucket/key` vs presigned URL）。
 5. G-13：TickHub-CN 爬虫只覆盖 `announcements / reports / risks / northbound` 四类，`kline` 与 `financial_report` 归档表无写入方；财报与 K 线需要新增采集任务或 sidecar（见 `tickhub-integration.md`）。
 6. G-14：已确认 `commercial_use=false`（DEC-0006）——数据可完整采集，每条事件记 `source_info.compliance_tier` 与 `commercial_use=false`，查询端按级门禁；若后续转对外商用需重新采集。覆盖面差异见 `tickhub-integration.md` §5.4。
@@ -316,4 +316,4 @@
 | --- | --- | --- |
 | 2026-10-26 | v0.1 | 首版：信封、五类事件、校验、重试 |
 | 2026-10-26 | v0.2 | `event_id` 改为确定性哈希并新增 `biz_key`；补 `research` / `northbound` / `heartbeat`；补发布端要求、Stream 保留与 AOF；补 G-13/G-14 |
-| 2026-10-27 | v0.3 | G-10 收口：CN 数据事件补 `compliance_tier=C` 与 `commercial_use=false`（DEC-0008）；可选字段，不升 `schema_version` |
+| 2026-10-27 | v0.3 | G-10 收口：CN 数据事件补 `compliance_tier=C` 与 `commercial_use=false`（DEC-0009）；可选字段，不升 `schema_version` |
