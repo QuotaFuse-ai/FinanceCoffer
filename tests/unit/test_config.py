@@ -19,8 +19,15 @@ def test_defaults_match_spec() -> None:
     assert config.redis_url == "redis://127.0.0.1:6379/1"
     assert config.log_level == "INFO"
     assert config.cold_after_years == 3
+    assert config.compliance_enabled is False
     assert config.db_url is None
     assert config.mcp_token is None
+
+
+def test_compliance_switch_reads_fc_env_flag() -> None:
+    assert load_config(env={"FC_COMPLIANCE_ENABLED": "true"}).compliance_enabled is True
+    assert load_config(env={"FC_COMPLIANCE_ENABLED": "false"}).compliance_enabled is False
+    assert load_config(env={}).compliance_enabled is False
 
 
 def test_env_prefix_is_fc() -> None:

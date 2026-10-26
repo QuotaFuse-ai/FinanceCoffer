@@ -37,6 +37,7 @@ class ErrorCode(str, Enum):
     E_PARTIAL_FAILURE = "E_PARTIAL_FAILURE"
     E_NOT_IMPLEMENTED = "E_NOT_IMPLEMENTED"
     E_INTERRUPTED = "E_INTERRUPTED"
+    E_NOT_FOUND = "E_NOT_FOUND"
 
 
 _EXIT_CODES: Mapping[ErrorCode, ExitCode] = {
@@ -49,6 +50,7 @@ _EXIT_CODES: Mapping[ErrorCode, ExitCode] = {
     ErrorCode.E_PARTIAL_FAILURE: ExitCode.PARTIAL_FAILURE,
     ErrorCode.E_NOT_IMPLEMENTED: ExitCode.ERROR,
     ErrorCode.E_INTERRUPTED: ExitCode.INTERRUPTED,
+    ErrorCode.E_NOT_FOUND: ExitCode.ERROR,
 }
 
 
@@ -122,3 +124,7 @@ class NotImplementedYetError(FinanceCofferError):
 
 class InterruptedError_(FinanceCofferError):
     code = ErrorCode.E_INTERRUPTED
+
+
+class NotFoundError(FinanceCofferError):
+    code = ErrorCode.E_NOT_FOUND

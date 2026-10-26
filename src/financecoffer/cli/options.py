@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import typer
+
 from financecoffer.core.trace import new_trace_id
 
 OUTPUT_FORMATS: tuple[str, ...] = ("json", "table", "csv", "yaml")
@@ -25,3 +27,9 @@ class GlobalOptions:
     trace_id: str = field(default_factory=new_trace_id)
     quiet: bool = False
     verbose: bool = False
+
+
+def from_context(ctx: typer.Context) -> GlobalOptions:
+    """Return the options parsed by the root callback (defaults outside tests)."""
+
+    return ctx.obj if isinstance(ctx.obj, GlobalOptions) else GlobalOptions()

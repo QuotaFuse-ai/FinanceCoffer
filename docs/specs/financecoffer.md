@@ -232,6 +232,7 @@ CREATE INDEX idx_ann_chunk_embedding
 | `FC_EVENT_CONSUMER` | `redis` | `redis` / `kafka` / `webhook` |
 | `FC_REDIS_URL` | `redis://127.0.0.1:6379/1` | 事件流 |
 | `FC_MCP_TOKEN` | — | MCP HTTP Bearer |
+| `FC_COMPLIANCE_ENABLED` | `false` | 合规标记开关（DEC-0010）：关闭时不读写 `compliance_tier`/`commercial_use`，开启时写入必填、读取回填 `meta.compliance_tier` |
 | `FC_LOG_LEVEL` | `INFO` | 日志级别 |
 
 旧变量 `VAULT_*` 全部废弃，映射见 `docs/specs/naming.md`。
@@ -267,3 +268,4 @@ CREATE INDEX idx_ann_chunk_embedding
 | --- | --- | --- |
 | 2026-10-26 | v0.1 | 首版，依据 v1.0 文档更名并整理 |
 | 2026-10-26 | v0.2 | G-06 定案：embedding 改用本地 bge-m3 1024 维（DEC-0005），DDL、环境变量、CLI 同步更新 |
+| 2026-10-27 | v0.3 | G-11 改为运行时开关 `FC_COMPLIANCE_ENABLED`（默认关闭，DEC-0010）；§6.2 REST 接口进入实现范围 |

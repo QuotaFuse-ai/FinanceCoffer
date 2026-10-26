@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, NoReturn
-
 import typer
 
-from financecoffer.cli.options import GlobalOptions
-from financecoffer.cli.output import emit_envelope
+from financecoffer.cli.options import from_context
+from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
-from financecoffer.core.envelope import Envelope
 from financecoffer.core.errors import FinanceCofferError
 from financecoffer.db import (
     PARTITIONED_TABLES,
@@ -22,22 +19,6 @@ from financecoffer.db import (
 )
 from financecoffer.db.connection import connect
 from financecoffer.db.migrations import render_sql
-
-
-def _options(ctx: typer.Context) -> GlobalOptions:
-    return ctx.obj if ctx.obj is not None else GlobalOptions()
-
-
-def _succeed(options: GlobalOptions, data: dict[str, Any]) -> None:
-    emit_envelope(Envelope.success(data, trace_id=options.trace_id), quiet=options.quiet)
-
-
-def _fail(options: GlobalOptions, error: FinanceCofferError) -> NoReturn:
-    emit_envelope(
-        Envelope.from_error(error, trace_id=options.trace_id),
-        quiet=options.quiet,
-    )
-    raise typer.Exit(code=error.exit_code)
 
 
 def register(app: typer.Typer) -> None:
@@ -56,7 +37,7 @@ def register(app: typer.Typer) -> None:
             3, "--ahead", min=0, help="Pre-create ODS partitions for N months ahead."
         ),
     ) -> None:
-        options = _options(ctx)
+        options = from_context(ctx)
         if sql:
             typer.echo(render_sql(), nl=False)
             return
@@ -66,17 +47,17 @@ def register(app: typer.Typer) -> None:
                 ahead_months=ahead,
             )
         except FinanceCofferError as exc:
-            _fail(options, exc)
-        _succeed(options, report.as_dict())
+            emit_failure(options, exc)
+        emit_success(options, report.as_dict())
 
     @db.command("status", help="Show applied and pending migrations for the target database.")
     def status(ctx: typer.Context) -> None:
-        options = _options(ctx)
+        options = from_context(ctx)
         try:
             report = MigrationRunner(options.db_url, timeout=options.timeout).status()
         except FinanceCofferError as exc:
-            _fail(options, exc)
-        _succeed(options, report.as_dict())
+            emit_failure(options, exc)
+        emit_success(options, report.as_dict())
 
     partitions = add_group(db, name="partitions", help_text="Manage ODS time partitions.")
 
@@ -88,7 +69,7 @@ def register(app: typer.Typer) -> None:
         ),
         ahead: int = typer.Option(3, "--ahead", min=0, help="How many extra months to add."),
     ) -> None:
-        options = _options(ctx)
+        options = from_context(ctx)
         try:
             start = parse_month(month) if month else None
             rows = create_partitions(
@@ -98,8 +79,8 @@ def register(app: typer.Typer) -> None:
                 timeout=options.timeout,
             )
         except FinanceCofferError as exc:
-            _fail(options, exc)
-        _succeed(
+            emit_failure(options, exc)
+        emit_success(
             options,
             {
                 "table": PARTITIONED_TABLES[0],
@@ -115,14 +96,14 @@ def register(app: typer.Typer) -> None:
             PARTITIONED_TABLES[0], "--table", help="Partitioned parent table."
         ),
     ) -> None:
-        options = _options(ctx)
+        options = from_context(ctx)
         try:
             dsn = resolve_dsn(options.db_url)
             with connect(dsn, timeout=options.timeout) as conn:
                 rows = list_partitions(conn, table)
         except FinanceCofferError as exc:
-            _fail(options, exc)
-        _succeed(
+            emit_failure(options, exc)
+        emit_success(
             options,
             {
                 "database": describe_dsn(dsn),

@@ -50,6 +50,10 @@ class Config(BaseModel):
     event_stream: str = "fc:stockdata:events"
     event_group: str = "fc-etl"
 
+    # Compliance marking (DEC-0010). Off means the fields are not considered at
+    # all: nothing is written to, read from or returned from the marking columns.
+    compliance_enabled: bool = False
+
     # MCP / logging / archive
     mcp_token: SecretStr | None = None
     log_level: str = "INFO"

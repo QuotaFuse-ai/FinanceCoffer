@@ -25,6 +25,7 @@ def test_error_codes_are_stable() -> None:
         "E_DEPENDENCY",
         "E_AUTH",
         "E_PARTIAL_FAILURE",
+        "E_NOT_FOUND",
         "E_NOT_IMPLEMENTED",
         "E_INTERRUPTED",
     }
@@ -40,6 +41,7 @@ def test_error_codes_are_stable() -> None:
         (ErrorCode.E_DEPENDENCY, 5),
         (ErrorCode.E_AUTH, 6),
         (ErrorCode.E_PARTIAL_FAILURE, 8),
+        (ErrorCode.E_NOT_FOUND, 1),
         (ErrorCode.E_NOT_IMPLEMENTED, 1),
         (ErrorCode.E_INTERRUPTED, 130),
     ],
