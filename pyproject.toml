@@ -92,7 +92,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-financecoffer = ["py.typed"]
+financecoffer = ["py.typed", "db/migrations/*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
