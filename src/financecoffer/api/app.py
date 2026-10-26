@@ -68,9 +68,8 @@ class _Metrics:
             "# TYPE fc_api_requests_total counter",
         ]
         for (method, path, status), count in sorted(self._requests.items()):
-            lines.append(
-                f'fc_api_requests_total{{method="{method}",path="{path}",status="{status}"}} {count}'
-            )
+            labels = f'method="{method}",path="{path}",status="{status}"'
+            lines.append(f"fc_api_requests_total{{{labels}}} {count}")
         lines.extend(
             [
                 "# HELP fc_api_request_seconds_total Cumulative request handling time.",

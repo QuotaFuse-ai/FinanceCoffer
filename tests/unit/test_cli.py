@@ -184,7 +184,9 @@ def test_query_risk_forwards_filters_to_the_service(monkeypatch) -> None:
 
     monkeypatch.setattr(query_module, "QueryService", _Service)
 
-    result = _invoke("query", "risk", "--symbol", "600000", "--since", "2025-01-01", "--limit", "20")
+    result = _invoke(
+        "query", "risk", "--symbol", "600000", "--since", "2025-01-01", "--limit", "20"
+    )
 
     assert result.exit_code == 0
     assert json.loads(result.stdout)["data"]["symbol"] == "600000"
