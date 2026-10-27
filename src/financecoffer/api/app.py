@@ -34,8 +34,14 @@ from financecoffer.query.service import (
     MAX_QUERY_CHARS,
     MAX_RISK_LIMIT,
     MAX_TOP_K,
+    BusinessMetrics,
     QueryService,
 )
+
+try:  # the vector layer is delivered separately; the API must still start without it
+    from financecoffer.vector.metrics import VECTOR_METRICS
+except ImportError:  # pragma: no cover - only while the vector layer is absent
+    VECTOR_METRICS = None  # type: ignore[assignment]
 
 _HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.E_INVALID_ARGUMENT: 400,
@@ -57,7 +63,13 @@ _log = get_logger("api")
 
 
 class _Metrics:
-    """Minimal in-process Prometheus registry for the API itself."""
+    """Minimal in-process Prometheus registry for the API itself.
+
+    Vector-layer series (``fc_vector_search_seconds``, ``fc_missing_chunk_total``)
+    are rendered by the vector layer's own registry and appended by the
+    ``/metrics`` route; ``ops.*`` counters are sampled from the warehouse at
+    scrape time.
+    """
 
     def __init__(self) -> None:
         self._requests: Counter[tuple[str, str, int]] = Counter()
@@ -67,7 +79,7 @@ class _Metrics:
         self._requests[(method, path, status)] += 1
         self._seconds += seconds
 
-    def render(self) -> str:
+    def render(self, business: BusinessMetrics | None = None) -> str:
         lines = [
             "# HELP fc_api_requests_total Total HTTP requests handled by the REST API.",
             "# TYPE fc_api_requests_total counter",
@@ -82,7 +94,45 @@ class _Metrics:
                 f"fc_api_request_seconds_total {self._seconds:.6f}",
             ]
         )
+        if business is not None:
+            lines.extend(_render_business_metrics(business))
         return "\n".join(lines) + "\n"
+
+
+def _label(value: str) -> str:
+    """Escape a free-text label value per the Prometheus text format."""
+
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _render_business_metrics(business: BusinessMetrics) -> list[str]:
+    """Render the ``ops.*`` families, skipping any family with no samples.
+
+    A family is omitted rather than published as zero when the warehouse reads
+    empty or the probe failed: the contract forbids inventing values.
+    """
+
+    lines: list[str] = []
+    if business.etl_events:
+        lines.append("# HELP fc_etl_events_total ETL events recorded per status.")
+        lines.append("# TYPE fc_etl_events_total counter")
+        for status, count in sorted(business.etl_events.items()):
+            lines.append(f'fc_etl_events_total{{status="{_label(status)}"}} {count}')
+    if business.dirty_data:
+        lines.append("# HELP fc_dirty_data_total Dead-lettered events per reason.")
+        lines.append("# TYPE fc_dirty_data_total counter")
+        for reason, count in sorted(business.dirty_data.items()):
+            lines.append(f'fc_dirty_data_total{{reason="{_label(reason)}"}} {count}')
+    if business.archive_jobs:
+        lines.append("# HELP fc_archive_job_total Archive jobs per status.")
+        lines.append("# TYPE fc_archive_job_total counter")
+        for status, count in sorted(business.archive_jobs.items()):
+            lines.append(f'fc_archive_job_total{{status="{_label(status)}"}} {count}')
+    if business.consume_lag_seconds is not None:
+        lines.append("# HELP fc_etl_consume_lag_seconds Age of the oldest queued ETL event.")
+        lines.append("# TYPE fc_etl_consume_lag_seconds gauge")
+        lines.append(f"fc_etl_consume_lag_seconds {business.consume_lag_seconds:.3f}")
+    return lines
 
 
 class AnnouncementSearchRequest(BaseModel):
@@ -267,18 +317,24 @@ def create_app(
     def health(request: Request) -> JSONResponse:
         query_service: QueryService = request.app.state.query_service
         database = query_service.ping()
+        embedding = query_service.embedding_ready()
+        healthy = database and embedding
         data = {
-            "status": "ok" if database else "degraded",
+            "status": "ok" if healthy else "degraded",
             "version": __version__,
-            "checks": {"database": "ok" if database else "unreachable"},
+            "checks": {
+                "database": "ok" if database else "unreachable",
+                "embedding": "ok" if embedding else "unreachable",
+            },
             "compliance_enabled": query_service.config.compliance_enabled,
         }
         return _respond(Envelope.success(data, trace_id=_trace_id(request)))
 
     @app.get("/metrics", response_class=PlainTextResponse)
     def metrics(request: Request) -> PlainTextResponse:
+        vector_text = VECTOR_METRICS.render() if VECTOR_METRICS is not None else ""
         return PlainTextResponse(
-            request.app.state.metrics.render(),
+            request.app.state.metrics.render(_service(request).business_metrics()) + vector_text,
             media_type="text/plain; version=0.0.4; charset=utf-8",
         )
 
@@ -375,6 +431,9 @@ def create_app(
                 outcome=exc.code.value,
             )
             raise
+        finally:
+            if VECTOR_METRICS is not None:
+                VECTOR_METRICS.observe_search(time.perf_counter() - started)
         _audit_query(
             request,
             tool,

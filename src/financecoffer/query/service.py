@@ -180,6 +180,20 @@ def _year_number(record: Mapping[str, Any]) -> int | None:
 
 
 @dataclass(frozen=True)
+class BusinessMetrics:
+    """Counters sampled from ``ops.*`` for ``/metrics``.
+
+    ``consume_lag_seconds`` is ``None`` when events are queued but none carries
+    an ``event_time``; the scrape then omits the gauge instead of guessing.
+    """
+
+    etl_events: dict[str, int]
+    dirty_data: dict[str, int]
+    archive_jobs: dict[str, int]
+    consume_lag_seconds: float | None
+
+
+@dataclass(frozen=True)
 class QueryResult:
     """A service response plus the envelope metadata that belongs with it."""
 
@@ -238,6 +252,80 @@ class QueryService:
             return True
         except Exception:  # noqa: BLE001 - readiness must never crash the probe
             return False
+
+    def embedding_ready(self) -> bool:
+        """Return whether the embedding endpoint answers its health probe.
+
+        The probe is bounded to a few seconds and loopback calls bypass the
+        host HTTP proxy, mirroring ``_embed``. Any failure means "not ready",
+        never an exception: ``/health`` must stay answerable while a dependency
+        is down.
+        """
+
+        try:
+            import httpx
+        except ImportError:  # pragma: no cover - depends on install extras
+            return False
+
+        parts = urlsplit(self.config.embedding_url)
+        if not parts.scheme or not parts.netloc:
+            return False
+        endpoint = f"{parts.scheme}://{parts.netloc}/health"
+        trust_env = (parts.hostname or "") not in {"127.0.0.1", "localhost", "::1"}
+        timeout = max(0.5, min(float(self.timeout), 3.0))
+        try:
+            with httpx.Client(timeout=timeout, trust_env=trust_env) as client:
+                response = client.get(endpoint)
+                response.raise_for_status()
+                body = response.json()
+        except Exception:  # noqa: BLE001 - readiness must never crash the probe
+            return False
+
+        if not isinstance(body, Mapping):
+            return False
+        status = str(body.get("status", "")).strip().lower()
+        if status and status != "ok":
+            return False
+        dim = body.get("dim")
+        if isinstance(dim, int) and dim != self.config.embedding_dim:
+            return False
+        return True
+
+    def business_metrics(self) -> BusinessMetrics | None:
+        """Sample the ``ops.*`` counters behind the specification metrics.
+
+        Returns ``None`` when ``ops`` cannot be read, so ``/metrics`` omits
+        those families rather than inventing zeros. Only counts are read; the
+        query layer stays read-only.
+        """
+
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute("SELECT status, count(*) FROM ops.etl_event_log GROUP BY status")
+                etl_events = {str(row[0]): int(row[1]) for row in cur.fetchall()}
+                cur.execute("SELECT reason, count(*) FROM ops.etl_dlq GROUP BY reason")
+                dirty_data = {str(row[0]): int(row[1]) for row in cur.fetchall()}
+                cur.execute("SELECT status, count(*) FROM ops.archive_job GROUP BY status")
+                archive_jobs = {str(row[0]): int(row[1]) for row in cur.fetchall()}
+                cur.execute(
+                    "SELECT count(*), "
+                    "EXTRACT(EPOCH FROM (now() - min(event_time))) "
+                    "FROM ops.etl_event_log "
+                    "WHERE status IN ('received', 'processing')"
+                )
+                pending = cur.fetchone()
+        except Exception:  # noqa: BLE001 - a metrics scrape must never fail
+            return None
+
+        lag: float | None = 0.0
+        if pending is not None and int(pending[0] or 0) > 0:
+            lag = float(pending[1]) if pending[1] is not None else None
+        return BusinessMetrics(
+            etl_events=etl_events,
+            dirty_data=dirty_data,
+            archive_jobs=archive_jobs,
+            consume_lag_seconds=lag,
+        )
 
     # -- structured ---------------------------------------------------------
 

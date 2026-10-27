@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from financecoffer.api import create_app
+from financecoffer.api.ratelimit import TokenBucket
 from financecoffer.core.config import Config
 from financecoffer.core.errors import (
     DependencyError,
@@ -13,9 +14,20 @@ from financecoffer.core.errors import (
     InvalidArgumentError,
     NotFoundError,
 )
-from financecoffer.query.service import MAX_TOP_K, QueryResult
+from financecoffer.query.service import (
+    MAX_QUERY_CHARS,
+    MAX_RISK_LIMIT,
+    MAX_TOP_K,
+    BusinessMetrics,
+    QueryResult,
+    QueryService,
+)
 
 DSN = "postgresql://fcoffer:secret@127.0.0.1:5432/financecoffer"
+
+
+def _no_io(*args: Any, **kwargs: Any) -> Any:
+    raise AssertionError("validation must finish before any database or HTTP call")
 
 
 class FakeService:
@@ -25,18 +37,28 @@ class FakeService:
         self,
         *,
         healthy: bool = True,
+        embedding_ok: bool = True,
         result: QueryResult | None = None,
         error: FinanceCofferError | None = None,
         compliance_enabled: bool = False,
+        business: BusinessMetrics | None = None,
     ) -> None:
         self.config = Config(db_url=DSN, compliance_enabled=compliance_enabled)
         self.healthy = healthy
+        self.embedding_ok = embedding_ok
         self.result = result or QueryResult(data={"symbol": "600000"}, source="dws")
         self.error = error
+        self.business = business
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
 
     def ping(self) -> bool:
         return self.healthy
+
+    def embedding_ready(self) -> bool:
+        return self.embedding_ok
+
+    def business_metrics(self) -> BusinessMetrics | None:
+        return self.business
 
     def _answer(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> QueryResult:
         self.calls.append((name, args, kwargs))
@@ -65,6 +87,18 @@ def _client(service: FakeService | None = None, *, compliance_enabled: bool = Fa
     return TestClient(_app(service, compliance_enabled=compliance_enabled))
 
 
+def _strict_client() -> TestClient:
+    """Client over the real service with I/O poisoned.
+
+    Every negative case below must be rejected by argument validation, so a
+    database connection or embedding request means the contract is wrong.
+    """
+
+    config = Config(db_url=DSN, rate_limit_enabled=False)
+    service = QueryService(config=config, connector=_no_io)
+    return TestClient(create_app(config=config, service=service))
+
+
 def test_health_ok_reports_envelope_and_switch_state() -> None:
     client = _client(FakeService(compliance_enabled=True), compliance_enabled=True)
 
@@ -74,7 +108,7 @@ def test_health_ok_reports_envelope_and_switch_state() -> None:
     payload = response.json()
     assert payload["ok"] is True
     assert payload["data"]["status"] == "ok"
-    assert payload["data"]["checks"] == {"database": "ok"}
+    assert payload["data"]["checks"] == {"database": "ok", "embedding": "ok"}
     assert payload["data"]["compliance_enabled"] is True
     assert payload["data"]["version"]
     assert payload["meta"]["trace_id"]
@@ -87,8 +121,20 @@ def test_health_degraded_when_database_is_unreachable() -> None:
 
     assert payload["ok"] is True
     assert payload["data"]["status"] == "degraded"
-    assert payload["data"]["checks"] == {"database": "unreachable"}
+    assert payload["data"]["checks"] == {"database": "unreachable", "embedding": "ok"}
     assert payload["data"]["compliance_enabled"] is False
+
+
+def test_health_degraded_when_embedding_is_unreachable() -> None:
+    client = _client(FakeService(embedding_ok=False))
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["status"] == "degraded"
+    assert payload["data"]["checks"] == {"database": "ok", "embedding": "unreachable"}
 
 
 def test_structured_returns_data_with_service_meta() -> None:
@@ -248,6 +294,63 @@ def test_risk_limit_is_bounded_by_the_contract() -> None:
     assert service.calls == []
 
 
+@pytest.mark.parametrize(
+    ("path", "params"),
+    [
+        ("/v1/structured/12ab", {}),
+        ("/v1/structured/ABCDEFGHIJK", {}),
+        ("/v1/structured/600000", {"metric": "ebitda"}),
+        ("/v1/structured/600000", {"year_range": "2010-2025"}),
+        ("/v1/structured/600000", {"year_range": "2025-2021"}),
+        ("/v1/structured/600000", {"year_range": "2023/2025"}),
+        ("/v1/risk/600000", {"since": "2024/06/01"}),
+        ("/v1/risk/600000", {"since": "yesterday"}),
+        ("/v1/risk/600000", {"limit": "0"}),
+        ("/v1/risk/600000", {"limit": str(MAX_RISK_LIMIT + 1)}),
+        ("/v1/risk/600000", {"limit": "abc"}),
+    ],
+)
+def test_invalid_query_parameters_are_rejected_before_io(path: str, params: dict[str, str]) -> None:
+    response = _strict_client().get(path, params=params)
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["data"] is None
+    assert payload["error"]["code"] == "E_INVALID_ARGUMENT"
+    assert payload["error"]["message"]
+
+
+def test_invalid_symbol_reports_the_offending_field() -> None:
+    payload = _strict_client().get("/v1/structured/12ab").json()
+
+    assert payload["error"]["details"]["field"] == "symbol"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"query_text": "revenue"},
+        {"symbol": "600000"},
+        {"symbol": "600000", "query_text": "   "},
+        {"symbol": "600000", "query_text": "revenue", "top_k": 0},
+        {"symbol": "600000", "query_text": "revenue", "top_k": MAX_TOP_K + 1},
+        {"symbol": "600000", "query_text": "revenue", "year_range": "2020-2035"},
+        {"symbol": "600000", "query_text": "revenue", "year_range": "2025-2024"},
+        {"symbol": "12ab", "query_text": "revenue"},
+        {"symbol": "600000", "query_text": "x" * (MAX_QUERY_CHARS + 1)},
+    ],
+)
+def test_search_body_contract_negatives(body: dict[str, Any]) -> None:
+    response = _strict_client().post("/v1/search/announcements", json=body)
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "E_INVALID_ARGUMENT"
+
+
 def test_trace_id_is_echoed_and_invalid_values_are_replaced() -> None:
     client = _client()
 
@@ -271,6 +374,78 @@ def test_metrics_render_prometheus_text_including_self() -> None:
     text = response.text
     assert 'fc_api_requests_total{method="GET",path="/health",status="200"} 1' in text
     assert "# TYPE fc_api_request_seconds_total counter" in text
+
+
+def test_metrics_render_business_families_from_the_warehouse() -> None:
+    service = FakeService(
+        business=BusinessMetrics(
+            etl_events={"done": 3, "failed": 1},
+            dirty_data={"schema_mismatch": 2},
+            archive_jobs={"done": 4},
+            consume_lag_seconds=12.5,
+        )
+    )
+
+    text = _client(service).get("/metrics").text
+
+    assert 'fc_etl_events_total{status="done"} 3' in text
+    assert 'fc_etl_events_total{status="failed"} 1' in text
+    assert 'fc_dirty_data_total{reason="schema_mismatch"} 2' in text
+    assert 'fc_archive_job_total{status="done"} 4' in text
+    assert "fc_etl_consume_lag_seconds 12.500" in text
+    assert "# TYPE fc_etl_consume_lag_seconds gauge" in text
+
+
+def test_metrics_omit_families_that_have_no_samples() -> None:
+    service = FakeService(
+        business=BusinessMetrics(
+            etl_events={}, dirty_data={}, archive_jobs={}, consume_lag_seconds=None
+        )
+    )
+
+    text = _client(service).get("/metrics").text
+
+    for family in (
+        "fc_etl_events_total",
+        "fc_dirty_data_total",
+        "fc_archive_job_total",
+        "fc_etl_consume_lag_seconds",
+    ):
+        assert family not in text
+
+
+def test_metrics_still_render_when_the_warehouse_cannot_be_sampled() -> None:
+    response = _client(FakeService(business=None)).get("/metrics")
+
+    assert response.status_code == 200
+    assert "fc_api_requests_total" in response.text
+    assert "fc_etl_events_total" not in response.text
+
+
+def test_metrics_include_the_vector_layer_series() -> None:
+    pytest.importorskip("financecoffer.vector.metrics")
+
+    text = _client().get("/metrics").text
+
+    assert "# TYPE fc_vector_search_seconds histogram" in text
+    assert "fc_missing_chunk_total" in text
+
+
+def test_rate_limit_returns_the_envelope_and_retry_after() -> None:
+    config = Config(db_url=DSN, rate_limit_enabled=False)
+    limiter = TokenBucket(rate_per_minute=1, burst=1)
+    client = TestClient(create_app(config=config, service=FakeService(), rate_limiter=limiter))
+
+    assert client.get("/v1/structured/600000").status_code == 200
+
+    limited = client.get("/v1/structured/600000")
+
+    assert limited.status_code == 429
+    payload = limited.json()
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "E_RATE_LIMITED"
+    assert int(limited.headers["Retry-After"]) >= 1
+    assert client.get("/health").status_code == 200
 
 
 def test_unknown_route_is_a_404() -> None:
