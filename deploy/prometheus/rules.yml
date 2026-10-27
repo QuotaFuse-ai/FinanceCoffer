@@ -1,0 +1,65 @@
+# Alert rules for the metrics named in docs/specs/cli.md section 3.14.
+groups:
+  - name: financecoffer
+    rules:
+      - alert: FinanceCofferEtlConsumeLagHigh
+        expr: fc_etl_consume_lag_seconds > 60
+        for: 5m
+        labels:
+          severity: warning
+          service: financecoffer
+        annotations:
+          summary: "ETL consumer lag above 60 seconds"
+          description: >-
+            The newest consumed event is {{ $value }} seconds behind the stream
+            head. Check worker health and Redis stream backlog.
+
+      - alert: FinanceCofferEtlEventsFailed
+        expr: increase(fc_etl_events_total{status="failed"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: financecoffer
+        annotations:
+          summary: "ETL event failures increasing"
+          description: >-
+            {{ $value }} events per second failed within the last five minutes.
+            Inspect the dead-letter queue and upstream payload quality.
+
+      - alert: FinanceCofferMissingChunk
+        expr: fc_missing_chunk_total > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: financecoffer
+        annotations:
+          summary: "Missing announcement chunks detected"
+          description: >-
+            {{ $value }} chunk gaps were reported. Re-run the chunking job for
+            the affected symbols before serving retrieval results.
+
+      - alert: FinanceCofferArchiveJobFailed
+        expr: increase(fc_archive_job_total{status="failed"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: financecoffer
+        annotations:
+          summary: "Archive jobs failing"
+          description: >-
+            {{ $value }} archive jobs per second failed within the last five
+            minutes. Verify MinIO reachability and bucket permissions.
+
+      - alert: FinanceCofferDbPoolSaturated
+        # SQLAlchemy pool ceiling: pool_size 5 + max_overflow 10 = 15
+        # connections; warn above 80%.
+        expr: fc_db_pool_in_use > 12
+        for: 5m
+        labels:
+          severity: warning
+          service: financecoffer
+        annotations:
+          summary: "Database connection pool near capacity"
+          description: >-
+            {{ $value }} of 15 connections are checked out. Look for slow
+            queries or leaked sessions.

@@ -13,3 +13,4 @@ logs/
 
 # Local launcher overrides (machine-specific paths)
 *.local.cmd
+*.local.sh

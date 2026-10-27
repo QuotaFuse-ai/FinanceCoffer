@@ -1,0 +1,20 @@
+# Prometheus scrape configuration for FinanceCoffer.
+#
+# The target is the compose service name; run Prometheus on the same compose
+# network, or replace `api:8100` with the reachable host address.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - rules.yml
+
+scrape_configs:
+  - job_name: financecoffer-api
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets: ["api:8100"]
+        labels:
+          service: financecoffer
+          component: api

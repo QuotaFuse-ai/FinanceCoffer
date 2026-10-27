@@ -1,0 +1,176 @@
+# FinanceCoffer deployment topology: PostgreSQL + pgvector, Redis, MinIO, API
+# and the ETL worker. Startup order is postgres/redis/minio (healthy) ->
+# migrate (one-shot) -> api/worker.
+#
+# Secrets: this file contains none. Every value is interpolated from
+# deploy/.env, which is gitignored; deploy/.env.example lists the names with
+# CHANGE_ME placeholders. Run with an explicit env file:
+#
+#   docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
+#
+# Only the API publishes a host port, and it binds loopback by default. Change
+# the host side only behind an authenticating reverse proxy.
+#
+# MinIO image note: some networks cannot pull the official image. The tag below
+# is the reference target; supply an equivalent image from a reachable registry
+# when needed. See docs/decisions/DEC-0014-object-storage-minio-local-binary.md
+# for the local-binary distribution rule that applies outside containers.
+
+name: financecoffer
+
+x-app-env: &app-env
+  FC_DB_URL: "postgresql+psycopg://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}"
+  FC_REDIS_URL: "redis://redis:6379/1"
+  FC_EMBEDDING_PROVIDER: "${FC_EMBEDDING_PROVIDER:?set FC_EMBEDDING_PROVIDER}"
+  FC_EMBEDDING_MODEL: "${FC_EMBEDDING_MODEL:?set FC_EMBEDDING_MODEL}"
+  FC_EMBEDDING_DIM: "${FC_EMBEDDING_DIM:?set FC_EMBEDDING_DIM}"
+  FC_EMBEDDING_URL: "${FC_EMBEDDING_URL:?set FC_EMBEDDING_URL}"
+  FC_EMBEDDING_API_KEY: "${FC_EMBEDDING_API_KEY:-}"
+  FC_MINIO_ENDPOINT: "minio:9000"
+  FC_MINIO_ACCESS_KEY: "${FC_MINIO_ACCESS_KEY:?set FC_MINIO_ACCESS_KEY}"
+  FC_MINIO_SECRET_KEY: "${FC_MINIO_SECRET_KEY:?set FC_MINIO_SECRET_KEY}"
+  FC_MINIO_BUCKET: "${FC_MINIO_BUCKET:?set FC_MINIO_BUCKET}"
+  FC_EVENT_CONSUMER: "${FC_EVENT_CONSUMER:?set FC_EVENT_CONSUMER}"
+  FC_EVENT_STREAM: "${FC_EVENT_STREAM:?set FC_EVENT_STREAM}"
+  FC_EVENT_GROUP: "${FC_EVENT_GROUP:?set FC_EVENT_GROUP}"
+  FC_COMPLIANCE_ENABLED: "${FC_COMPLIANCE_ENABLED:?set FC_COMPLIANCE_ENABLED}"
+  FC_RATE_LIMIT_ENABLED: "${FC_RATE_LIMIT_ENABLED:?set FC_RATE_LIMIT_ENABLED}"
+  FC_RATE_LIMIT_PER_MINUTE: "${FC_RATE_LIMIT_PER_MINUTE:?set FC_RATE_LIMIT_PER_MINUTE}"
+  FC_MCP_TOKEN: "${FC_MCP_TOKEN:-}"
+  FC_LOG_LEVEL: "${FC_LOG_LEVEL:?set FC_LOG_LEVEL}"
+  FC_COLD_AFTER_YEARS: "${FC_COLD_AFTER_YEARS:?set FC_COLD_AFTER_YEARS}"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:?set POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB:?set POSTGRES_DB}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [fcnet]
+    expose: ["5432"]
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [fcnet]
+    expose: ["6379"]
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: "${FC_MINIO_ACCESS_KEY:?set FC_MINIO_ACCESS_KEY}"
+      MINIO_ROOT_PASSWORD: "${FC_MINIO_SECRET_KEY:?set FC_MINIO_SECRET_KEY}"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [fcnet]
+    expose: ["9000", "9001"]
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: financecoffer/app:local
+    restart: "no"
+    command: ["db", "migrate"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    networks: [fcnet]
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: financecoffer/app:local
+    restart: unless-stopped
+    # The container must listen on all interfaces; the host side stays
+    # loopback-only. `fcoffer serve api` refuses non-loopback binds, so the
+    # container starts uvicorn against the same application factory.
+    entrypoint:
+      ["uvicorn", "financecoffer.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8100"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8100:8100"
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [fcnet]
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: financecoffer/app:local
+    restart: unless-stopped
+    command: ["etl", "consume"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import os, redis; redis.Redis.from_url(os.environ['FC_REDIS_URL'], socket_timeout=3).ping()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [fcnet]
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+
+networks:
+  fcnet:
+    driver: bridge
