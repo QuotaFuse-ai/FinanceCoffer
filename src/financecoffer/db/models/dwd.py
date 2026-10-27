@@ -134,6 +134,8 @@ class StockKline(Base):
     quality_status: Mapped[str] = mapped_column(String(20))
     confidence: Mapped[str | None] = mapped_column(String(20))
     fetch_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    is_cold: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    minio_url: Mapped[str | None] = mapped_column(String(500))
     event_id: Mapped[str] = mapped_column(String(100))
     provider: Mapped[str] = mapped_column(String(50))
     ingested_at: Mapped[datetime] = mapped_column(
@@ -168,6 +170,8 @@ class StockRiskEvent(Base):
     quality_status: Mapped[str] = mapped_column(String(20))
     confidence: Mapped[str | None] = mapped_column(String(20))
     fetch_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    is_cold: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    minio_url: Mapped[str | None] = mapped_column(String(500))
     event_id: Mapped[str] = mapped_column(String(100))
     provider: Mapped[str] = mapped_column(String(50))
     ingested_at: Mapped[datetime] = mapped_column(
@@ -199,6 +203,8 @@ class StockQuoteSnapshot(Base):
     quality_status: Mapped[str] = mapped_column(String(20))
     confidence: Mapped[str | None] = mapped_column(String(20))
     fetch_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    is_cold: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    minio_url: Mapped[str | None] = mapped_column(String(500))
     event_id: Mapped[str] = mapped_column(String(100))
     provider: Mapped[str] = mapped_column(String(50))
     ingested_at: Mapped[datetime] = mapped_column(

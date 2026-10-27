@@ -1,6 +1,7 @@
 """CLI command modules. Each module exposes ``register(app)``."""
 
 from financecoffer.cli.commands import (
+    archive,
     bootstrap,
     db,
     etl,
@@ -15,6 +16,7 @@ from financecoffer.cli.commands import (
 )
 
 MODULES = (
+    archive,
     bootstrap,
     db,
     serve,
