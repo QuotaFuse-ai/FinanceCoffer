@@ -50,6 +50,17 @@ class Config(BaseModel):
     event_stream: str = "fc:stockdata:events"
     event_group: str = "fc-etl"
 
+    # ETL consumer. An empty ``etl_consumer_name`` means "use the hostname", so
+    # a restart on the same host reclaims its own pending entries first.
+    etl_consumer_name: str = ""
+    etl_dlq_stream: str = "fc:stockdata:dlq"
+    etl_control_key: str = "fc:etl:control"
+    etl_batch_size: int = Field(default=50, ge=1, le=1000)
+    etl_block_ms: int = Field(default=5000, ge=0, le=60_000)
+    etl_max_attempts: int = Field(default=3, ge=1, le=100)
+    etl_backoff_ms: int = Field(default=1000, ge=0, le=60_000)
+    etl_claim_idle_ms: int = Field(default=60_000, ge=0)
+
     # Compliance marking (DEC-0010). Off means the fields are not considered at
     # all: nothing is written to, read from or returned from the marking columns.
     compliance_enabled: bool = False
@@ -94,6 +105,13 @@ class Config(BaseModel):
         if level not in LOG_LEVELS:
             raise ValueError(f"FC_LOG_LEVEL must be one of {sorted(LOG_LEVELS)}")
         return level
+
+    @field_validator("event_stream", "event_group", "etl_dlq_stream", "etl_control_key")
+    @classmethod
+    def _validate_redis_key(cls, value: str) -> str:
+        if not value:
+            raise ValueError("Redis stream/group/key names must not be empty")
+        return value
 
     def redacted_dict(self) -> dict[str, Any]:
         """Return plain data with credentials masked, for ``fcoffer config show``."""

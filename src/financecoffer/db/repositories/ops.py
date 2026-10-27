@@ -238,6 +238,73 @@ class DlqRepository(BaseRepository[EtlDlq]):
         )
         return list(self.session.scalars(statement))
 
+    def find_pending(self, dlq_id: int) -> EtlDlq | None:
+        statement = select(self.model).where(
+            self.model.id == dlq_id, self.model.status == "pending"
+        )
+        return self._one_or_none(statement)
+
+    def find_pending_by_event(self, event_id: str) -> EtlDlq | None:
+        """Return the newest pending entry for ``event_id``, if any."""
+
+        statement = (
+            select(self.model)
+            .where(self.model.event_id == event_id, self.model.status == "pending")
+            .order_by(self.model.id.desc())
+            .limit(1)
+        )
+        return self._one_or_none(statement)
+
+    def find_pending_by_entry(self, stream: str, entry_id: str) -> EtlDlq | None:
+        """Return the pending entry already recorded for a stream message.
+
+        Used to make failing a message idempotent: a redelivery after a
+        successful enqueue that failed to acknowledge must not create a second
+        DLQ row.
+        """
+
+        statement = (
+            select(self.model)
+            .where(
+                self.model.stream == stream,
+                self.model.entry_id == entry_id,
+                self.model.status == "pending",
+            )
+            .order_by(self.model.id.desc())
+            .limit(1)
+        )
+        return self._one_or_none(statement)
+
+    def latest(self, *, limit: int = 1) -> list[EtlDlq]:
+        statement = select(self.model).order_by(self.model.created_at.desc()).limit(limit)
+        return list(self.session.scalars(statement))
+
+    def depth(self) -> int:
+        statement = (
+            select(func.count())
+            .select_from(self.model)
+            .where(self.model.status == "pending")
+        )
+        return int(self.session.scalar(statement) or 0)
+
+    def record_retry(self, dlq_id: int, *, error: str | None = None) -> EtlDlq | None:
+        """Count one retry; ``error=None`` marks the entry as recovered."""
+
+        values: dict[str, Any] = {
+            "retry_count": self.model.retry_count + 1,
+            "status": "pending" if error is not None else "retried",
+        }
+        if error is not None:
+            values["error_detail"] = error
+        statement = (
+            update(self.model)
+            .where(self.model.id == dlq_id)
+            .values(**values)
+            .returning(self.model)
+            .execution_options(synchronize_session=False, populate_existing=True)
+        )
+        return self._one_or_none(statement)
+
     def mark_retried(self, dlq_id: int) -> EtlDlq | None:
         statement = (
             update(self.model)
