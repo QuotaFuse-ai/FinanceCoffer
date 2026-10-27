@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Index,
     String,
+    Text,
     desc,
     text,
 )
@@ -55,6 +56,7 @@ class StockRawData(Base):
     fetch_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     request_params: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     raw_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    raw_text: Mapped[str | None] = mapped_column(Text)
     raw_file_path: Mapped[str | None] = mapped_column(String(500))
     etl_status: Mapped[str] = mapped_column(String(20), server_default=text("'pending'"))
     ingested_at: Mapped[datetime] = mapped_column(

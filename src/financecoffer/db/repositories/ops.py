@@ -79,6 +79,21 @@ class EventLogRepository(BaseRepository[EtlEventLog]):
 
         return self._transition(event_id, attempts=self.model.attempts + 1)
 
+    def requeue(self, event_id: str) -> EtlEventLog | None:
+        """Hand an event back to the consumer after an ``ods replay``.
+
+        Replay never rewrites ODS; the event log is the durable queue, so a
+        replay is a status reset. ``attempts`` is left alone because it counts
+        processing attempts, which ``begin`` bumps.
+        """
+
+        return self._transition(
+            event_id,
+            status="received",
+            error=None,
+            processed_at=None,
+        )
+
     def begin(self, event_id: str) -> EtlEventLog | None:
         return self._transition(
             event_id,

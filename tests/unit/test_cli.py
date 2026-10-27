@@ -78,14 +78,14 @@ def test_no_arguments_prints_help() -> None:
 
 
 def test_placeholder_returns_not_implemented_envelope() -> None:
-    result = _invoke("ods", "list")
+    result = _invoke("dwd", "show")
 
     assert result.exit_code == 1
     payload = json.loads(result.stdout)
     assert payload["ok"] is False
     assert payload["data"] is None
     assert payload["error"]["code"] == "E_NOT_IMPLEMENTED"
-    assert payload["error"]["details"]["command"] == "ods list"
+    assert payload["error"]["details"]["command"] == "dwd show"
     assert payload["meta"]["trace_id"]
 
 

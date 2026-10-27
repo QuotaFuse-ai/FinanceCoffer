@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import desc, func, select
 
 from financecoffer.db.models.ods import StockRawData
 from financecoffer.db.repositories.base import BaseRepository
@@ -32,6 +32,65 @@ class RawDataRepository(BaseRepository[StockRawData]):
             .limit(limit)
         )
         return self.session.scalars(statement).all()
+
+    def by_id(self, record_id: int) -> StockRawData | None:
+        """Look one record up by ``id`` (globally unique despite the composite key)."""
+
+        statement = select(self.model).where(self.model.id == record_id).limit(1)
+        return self._one_or_none(statement)
+
+    def search(
+        self,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        data_type: str | None = None,
+        symbol: str | None = None,
+        etl_status: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Sequence[StockRawData]:
+        """Newest-first listing; ``until`` is exclusive."""
+
+        statement = select(self.model)
+        if since is not None:
+            statement = statement.where(self.model.fetch_time >= since)
+        if until is not None:
+            statement = statement.where(self.model.fetch_time < until)
+        if data_type is not None:
+            statement = statement.where(self.model.data_type == data_type)
+        if symbol is not None:
+            statement = statement.where(self.model.symbol == symbol)
+        if etl_status is not None:
+            statement = statement.where(self.model.etl_status == etl_status)
+        statement = (
+            statement.order_by(desc(self.model.fetch_time), desc(self.model.id))
+            .limit(limit)
+            .offset(offset)
+        )
+        return self.session.scalars(statement).all()
+
+    def failed(self, *, limit: int = 1000) -> Sequence[StockRawData]:
+        """Rows awaiting replay, oldest first so redelivery keeps upstream order."""
+
+        statement = (
+            select(self.model)
+            .where(self.model.etl_status == "failed")
+            .order_by(self.model.fetch_time, self.model.id)
+            .limit(limit)
+        )
+        return self.session.scalars(statement).all()
+
+    def statistics(self, group_by: str) -> list[tuple[Any, int]]:
+        """Counts per distinct value of ``group_by``; the caller validates the column."""
+
+        column = getattr(self.model, group_by)
+        statement = (
+            select(column, func.count())
+            .group_by(column)
+            .order_by(func.count().desc(), column)
+        )
+        return [(value, int(count)) for value, count in self.session.execute(statement).all()]
 
     def iter_range(
         self,

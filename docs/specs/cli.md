@@ -1,8 +1,9 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.2（设计稿）
+版本：v0.3（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
+v0.3 按 T-005 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
 
 ## 1. 全局参数
 
@@ -145,16 +146,27 @@ fcoffer ingest webhook --host 127.0.0.1 --port 8101 [--token TOKEN]
 
 - `ingest backfill` 只用于一次性迁移/对账，不作为运行时取数通道；执行时在 ODS 标记 `source=backfill`。
 - `ingest event` 是上游事件格式的契约验证入口，测试工程师用它做对照测试。
+  默认行为是「校验 → `ops.etl_event_log` 幂等登记 → 追加 ODS」，两步在**同一事务**内完成：
+  分区缺失导致 ODS 写入失败时，事件日志登记一并回滚，事件可原样重投。
+  `--validate-only` 只校验、不连库。
 
 ### 3.7 ODS
 
 ```bash
-fcoffer ods list [--data-type financial|announcement|kline|risk|quote] [--symbol S] \
-                 [--since T] [--until T] [--etl-status pending|processed|failed] [--limit 100]
+fcoffer ods list [--data-type financial|announcement|kline|quote|risk|research|northbound|heartbeat] \
+                 [--symbol S] [--since T] [--until T] [--etl-status pending|done|failed] [--limit 100]
 fcoffer ods show <id> [--raw]
 fcoffer ods stats [--group-by data_type|source|etl_status]
 fcoffer ods replay <id>|--all-failed [--dry-run]
 ```
+
+- `list` 按 `fetch_time` 倒序；`--since` / `--until` 接受 `YYYY-MM-DD`（UTC 零点，日期型 `--until` 含当天）
+  或带时区的 RFC 3339；`--limit` 上限 1000。
+- `show --raw` 输出落库时保存的 `raw_text` 原文（末尾换行也保留），不套 JSON 信封，供逐字节比对；
+  只有 `raw_file_path` 的历史行没有原文，退化为 `raw_json` 的紧凑 JSON。
+- `stats` 只做计数，不做业务汇总。
+- `replay` 只把 `ops.etl_event_log` 中对应事件重置为 `received` 交给下游消费者，**不修改 ODS 行**；
+  `--dry-run` 只打印 manifest（`id` / `event_id` / `data_type` / `symbol` / `source` / `fetch_time` / `etl_status`），零写入。
 
 ### 3.8 DWD
 

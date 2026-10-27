@@ -18,17 +18,32 @@ from financecoffer.core.envelope import Meta
 from financecoffer.core.errors import FinanceCofferError, InvalidArgumentError, StorageError
 from financecoffer.db.session import Database
 from financecoffer.events import register_event, validate_event
+from financecoffer.ods import land_event
 
 
-def _read_payload(path: str) -> Mapping[str, Any]:
-    """Read one event file as UTF-8 JSON; failures name the offending ``file``."""
+def _read_payload(path: str) -> tuple[Mapping[str, Any], str]:
+    """Read one event file as UTF-8 JSON; failures name the offending ``file``.
+
+    The file is read as bytes and decoded without newline translation, so CRLF
+    documents keep their exact bytes for ``ods show <id> --raw``. The decoded
+    text is returned alongside the parsed mapping for ODS to store verbatim.
+    """
 
     try:
-        text = Path(path).read_text(encoding="utf-8")
+        text = Path(path).read_bytes().decode("utf-8")
     except OSError as exc:
         raise InvalidArgumentError(
             f"cannot read event file: {path}",
             details={"errors": [{"field": "file", "reason": exc.strerror or str(exc)}]},
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise InvalidArgumentError(
+            "event file is not valid UTF-8",
+            details={
+                "errors": [
+                    {"field": "file", "reason": f"invalid UTF-8 at byte {exc.start}"}
+                ]
+            },
         ) from exc
     try:
         payload = json.loads(text)
@@ -46,7 +61,7 @@ def _read_payload(path: str) -> Mapping[str, Any]:
             "event file must contain a JSON object",
             details={"errors": [{"field": "file", "reason": f"got {type(payload).__name__}"}]},
         )
-    return payload
+    return payload, text
 
 
 def register(app: typer.Typer) -> None:
@@ -54,7 +69,7 @@ def register(app: typer.Typer) -> None:
 
     @ingest.command(
         "event",
-        help="Validate one upstream event and register it in ops.etl_event_log.",
+        help="Validate one upstream event, register it once and append it to ODS.",
     )
     def event(
         ctx: typer.Context,
@@ -67,7 +82,7 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         options = from_context(ctx)
         try:
-            payload = _read_payload(file)
+            payload, original_text = _read_payload(file)
             config = load_config(overrides={"db_url": options.db_url})
             validated = validate_event(payload, compliance_enabled=config.compliance_enabled)
             data = validated.summary()
@@ -78,14 +93,20 @@ def register(app: typer.Typer) -> None:
                 try:
                     with database.session_scope() as session:
                         registration = register_event(session, validated)
+                        landing = (
+                            None
+                            if registration.duplicate
+                            else land_event(session, validated, raw_text=original_text)
+                        )
                 except SQLAlchemyError as exc:
                     raise StorageError(
-                        "event log registration failed",
+                        "event registration failed",
                         details={"hint": "check FC_DB_URL and that migrations are applied"},
                     ) from exc
                 finally:
                     database.dispose()
                 data.update(registration.as_dict())
+                data["ods"] = landing.as_dict() if landing is not None else None
         except FinanceCofferError as exc:
             emit_failure(options, exc)
         emit_success(options, data, meta=Meta(source="etl"))
