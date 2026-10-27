@@ -90,12 +90,12 @@ def test_placeholder_returns_not_implemented_envelope() -> None:
 
 
 def test_placeholder_accepts_documented_options() -> None:
-    result = _invoke("dws", "build", "--symbol", "600000", "--rebuild")
+    result = _invoke("dwd", "backfill", "--from-ods", "--symbol", "600000", "--dry-run")
 
     assert result.exit_code == 1
     payload = json.loads(result.stdout)
     assert payload["error"]["code"] == "E_NOT_IMPLEMENTED"
-    assert payload["error"]["details"]["command"] == "dws build"
+    assert payload["error"]["details"]["command"] == "dwd backfill"
 
 
 def test_query_structured_emits_envelope_from_the_service(monkeypatch) -> None:

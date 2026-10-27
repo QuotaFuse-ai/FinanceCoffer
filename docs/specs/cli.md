@@ -1,9 +1,10 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.3（设计稿）
+版本：v0.4（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
 v0.3 按 T-005 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
+v0.4 按 T-008 实装 `dws build` / `dws show` / `dws rebuild`，§3.9 字段表改为 DDL 口径（指标移入 `metrics_json`），补充确定性、部分失败与合规规则。
 
 ## 1. 全局参数
 
@@ -184,12 +185,32 @@ fcoffer dwd verify [--symbol S] [--report-date D]
 ### 3.9 DWS
 
 ```bash
-fcoffer dws build --symbol S|--all [--years 5] [--dry-run]
-fcoffer dws show --symbol S
-fcoffer dws rebuild [--since T] [--symbols ...]
+fcoffer dws build (--symbol S [--symbol S ...] | --all) [--as-of YYYY-MM-DD] [--years N]
+fcoffer dws show SYMBOL
+fcoffer dws rebuild [--as-of YYYY-MM-DD] [--years N]
 ```
 
-宽表字段：`revenue_5y`、`net_profit_5y`、`roe_5y`、`pe`、`pb`、`risk_summary`、`latest_announcement_ids`、`quality_status`、`confidence`、`as_of_date`。
+- `build` 每个 `symbol` 产出一行宽表快照；`--symbol` 与 `--all` 互斥，且必须给出其一，否则参数错误（退出码 2）。
+- `--as-of` 缺省为 UTC 当天，只按该日期截断 DWD 事实，不用 `now()` 参与计算；`--years` 取 1–10，默认 5。
+- 单个 symbol 失败或跳过不影响其他 symbol；存在失败时输出完整 `built` / `skipped` / `failed` 明细，
+  并以 `E_PARTIAL_FAILURE`（退出码 8）返回。
+- `rebuild` 等价于 `build --all`。
+- 同一输入与同一 `--as-of` 重复执行，`metrics_json` / `risk_summary` / `latest_announcements` 的 JSONB 内容逐字节一致
+  （仅 `built_at` 变化）。已存 `as_of` 更新时，更早的 `--as-of` 会被跳过（`reason: stale_as_of`），不覆盖较新快照。
+- `show` 读取已构建的宽表行；不存在返回 `E_NOT_FOUND`。
+
+宽表字段（以 DDL `dws.stock_agent_analysis_wide` 为准）：`symbol`、`as_of`、`metrics_json`、`risk_summary`、
+`latest_announcements`、`fiscal_years`、`source_version`、`built_at`、`compliance_tier`、`commercial_use`。
+
+- 近 5 年指标在 `metrics_json.years`（`year` / `revenue` / `net_profit` / `roe` / `pe` / `pb` 及质量字段）；
+  缺失年份显式为 `null` 且 `data_status="missing"`，不做零填充或插值。
+- 年度质量只落在 `metrics_json.quality`（`bad_years` / `suspicious_years` / `missing_years`），顶层不再设
+  `quality_status` / `confidence` 列。
+- 金额为元、4 位小数的定长字符串；`roe` / `pb` 当前恒为 `null` 并给出原因；`pe` 使用 `--as-of` 时点的估值快照
+  （临时口径，见 `docs/tasks/TASK-008/README.md`）。
+- `risk_summary` 覆盖 `(as_of − 3 年, as_of]`；`latest_announcements` 最多 20 条，按 `ann_date DESC, id DESC`。
+- 合规开关关闭时 `compliance_tier` / `commercial_use` 保持 `NULL`；开启时同一 symbol 的 DWD 源行必须同档同商用标记，
+  否则该 symbol 失败（不猜测、不取最严档）。
 
 ### 3.10 向量
 
