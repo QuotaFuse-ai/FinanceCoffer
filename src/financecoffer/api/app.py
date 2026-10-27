@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from financecoffer import __version__
+from financecoffer.api.ratelimit import TokenBucket
 from financecoffer.config.loader import load_config
 from financecoffer.core.config import Config
 from financecoffer.core.envelope import Envelope
@@ -25,8 +26,9 @@ from financecoffer.core.errors import (
     FinanceCofferError,
     InternalError,
     InvalidArgumentError,
+    RateLimitedError,
 )
-from financecoffer.core.logging import get_logger
+from financecoffer.core.logging import get_logger, log_query_audit
 from financecoffer.core.trace import new_trace_id, normalize_trace_id
 from financecoffer.query.service import (
     MAX_QUERY_CHARS,
@@ -46,7 +48,10 @@ _HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.E_NOT_IMPLEMENTED: 501,
     ErrorCode.E_INTERRUPTED: 500,
     ErrorCode.E_INTERNAL: 500,
+    ErrorCode.E_RATE_LIMITED: 429,
 }
+
+_RATE_LIMITED_PREFIX = "/v1/"
 
 _log = get_logger("api")
 
@@ -116,17 +121,48 @@ def _field_name(location: tuple[Any, ...]) -> str:
     return ".".join(parts)
 
 
+def _audit_query(
+    request: Request,
+    tool: str,
+    *,
+    started: float,
+    symbol: str | None,
+    outcome: str,
+    year_range: str | None = None,
+    since: str | None = None,
+    top_k: int | None = None,
+    hits: int | None = None,
+) -> None:
+    """Emit the S-10-1 audit record for one REST query."""
+
+    log_query_audit(
+        tool=tool,
+        trace_id=_trace_id(request),
+        symbol=symbol,
+        year_range=year_range,
+        since=since,
+        top_k=top_k,
+        hits=hits,
+        elapsed_ms=(time.perf_counter() - started) * 1000.0,
+        outcome=outcome,
+    )
+
+
 def create_app(
     *,
     config: Config | None = None,
     dsn: str | None = None,
     service: QueryService | None = None,
+    rate_limiter: TokenBucket | None = None,
 ) -> FastAPI:
     """Build the ASGI app.
 
     ``service`` is injectable for tests; in production the DSN comes from
     ``FC_DB_URL`` (optionally overridden by ``dsn``). Missing configuration is
     reported by ``/health`` and by the first query, not at import time.
+
+    ``rate_limiter`` overrides the limiter derived from ``config``; pass
+    ``None`` with ``rate_limit_enabled=False`` to disable limiting entirely.
     """
 
     resolved_config = config or load_config()
@@ -139,6 +175,15 @@ def create_app(
     app.state.config = resolved_config
     app.state.query_service = service or QueryService(config=resolved_config, dsn=dsn)
     app.state.metrics = _Metrics()
+    app.state.rate_limiter = (
+        rate_limiter
+        if rate_limiter is not None
+        else (
+            TokenBucket(rate_per_minute=resolved_config.rate_limit_per_minute)
+            if resolved_config.rate_limit_enabled
+            else None
+        )
+    )
 
     @app.middleware("http")
     async def _instrument(request: Request, call_next: Any) -> Any:
@@ -151,6 +196,33 @@ def create_app(
                 trace = new_trace_id()
         request.state.trace_id = trace
         started = time.perf_counter()
+
+        limiter: TokenBucket | None = app.state.rate_limiter
+        if limiter is not None and request.url.path.startswith(_RATE_LIMITED_PREFIX):
+            client_ip = request.client.host if request.client else "unknown"
+            if not limiter.allow(client_ip):
+                retry_after = limiter.retry_after(client_ip)
+                error = RateLimitedError(
+                    "rate limit exceeded",
+                    details={
+                        "limit_per_minute": limiter.rate_per_minute,
+                        "retry_after": retry_after,
+                    },
+                )
+                response = JSONResponse(
+                    status_code=_HTTP_STATUS[ErrorCode.E_RATE_LIMITED],
+                    content=Envelope.from_error(error, trace_id=trace).model_dump(mode="json"),
+                )
+                response.headers["Retry-After"] = str(retry_after)
+                app.state.metrics.record(
+                    request.method,
+                    "rate_limited",
+                    response.status_code,
+                    time.perf_counter() - started,
+                )
+                response.headers["X-Trace-Id"] = trace
+                return response
+
         response = await call_next(request)
         route = request.scope.get("route")
         path = getattr(route, "path", None) or "unmatched"
@@ -217,7 +289,29 @@ def create_app(
         metric: str | None = None,
         year_range: str | None = None,
     ) -> JSONResponse:
-        result = _service(request).structured(symbol, metric=metric, year_range=year_range)
+        tool = "GET /v1/structured/{symbol}"
+        started = time.perf_counter()
+        try:
+            result = _service(request).structured(symbol, metric=metric, year_range=year_range)
+        except FinanceCofferError as exc:
+            _audit_query(
+                request,
+                tool,
+                started=started,
+                symbol=symbol,
+                year_range=year_range,
+                outcome=exc.code.value,
+            )
+            raise
+        _audit_query(
+            request,
+            tool,
+            started=started,
+            symbol=symbol,
+            year_range=year_range,
+            hits=len(result.data.get("years") or ()),
+            outcome="ok",
+        )
         return _respond(
             Envelope.success(result.data, meta=result.meta(_trace_id(request)))
         )
@@ -229,7 +323,29 @@ def create_app(
         since: str | None = None,
         limit: int = Query(default=50, ge=1, le=MAX_RISK_LIMIT),
     ) -> JSONResponse:
-        result = _service(request).risk(symbol, since=since, limit=limit)
+        tool = "GET /v1/risk/{symbol}"
+        started = time.perf_counter()
+        try:
+            result = _service(request).risk(symbol, since=since, limit=limit)
+        except FinanceCofferError as exc:
+            _audit_query(
+                request,
+                tool,
+                started=started,
+                symbol=symbol,
+                since=since,
+                outcome=exc.code.value,
+            )
+            raise
+        _audit_query(
+            request,
+            tool,
+            started=started,
+            symbol=symbol,
+            since=since,
+            hits=result.data.get("count"),
+            outcome="ok",
+        )
         return _respond(
             Envelope.success(result.data, meta=result.meta(_trace_id(request)))
         )
@@ -239,11 +355,35 @@ def create_app(
         request: Request,
         body: AnnouncementSearchRequest,
     ) -> JSONResponse:
-        result = _service(request).search_announcements(
-            body.symbol,
-            body.query_text,
+        tool = "POST /v1/search/announcements"
+        started = time.perf_counter()
+        try:
+            result = _service(request).search_announcements(
+                body.symbol,
+                body.query_text,
+                year_range=body.year_range,
+                top_k=body.top_k,
+            )
+        except FinanceCofferError as exc:
+            _audit_query(
+                request,
+                tool,
+                started=started,
+                symbol=body.symbol,
+                year_range=body.year_range,
+                top_k=body.top_k,
+                outcome=exc.code.value,
+            )
+            raise
+        _audit_query(
+            request,
+            tool,
+            started=started,
+            symbol=body.symbol,
             year_range=body.year_range,
             top_k=body.top_k,
+            hits=result.data.get("count"),
+            outcome="ok",
         )
         return _respond(
             Envelope.success(result.data, meta=result.meta(_trace_id(request)))

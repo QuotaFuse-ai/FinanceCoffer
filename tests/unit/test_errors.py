@@ -11,6 +11,7 @@ from financecoffer.core.errors import (
     InvalidArgumentError,
     NotImplementedYetError,
     PartialFailureError,
+    RateLimitedError,
     StorageError,
     exit_code_for,
 )
@@ -28,6 +29,7 @@ def test_error_codes_are_stable() -> None:
         "E_NOT_FOUND",
         "E_NOT_IMPLEMENTED",
         "E_INTERRUPTED",
+        "E_RATE_LIMITED",
     }
 
 
@@ -44,6 +46,7 @@ def test_error_codes_are_stable() -> None:
         (ErrorCode.E_NOT_FOUND, 1),
         (ErrorCode.E_NOT_IMPLEMENTED, 1),
         (ErrorCode.E_INTERRUPTED, 130),
+        (ErrorCode.E_RATE_LIMITED, 1),
     ],
 )
 def test_error_code_maps_to_cli_exit_code(error_code: ErrorCode, expected: int) -> None:
@@ -66,6 +69,7 @@ def test_unknown_error_code_falls_back_to_general_error() -> None:
         (AuthError, ErrorCode.E_AUTH),
         (PartialFailureError, ErrorCode.E_PARTIAL_FAILURE),
         (NotImplementedYetError, ErrorCode.E_NOT_IMPLEMENTED),
+        (RateLimitedError, ErrorCode.E_RATE_LIMITED),
     ],
 )
 def test_exception_subclasses_expose_their_code(

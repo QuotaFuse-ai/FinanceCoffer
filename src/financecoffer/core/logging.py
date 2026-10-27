@@ -21,6 +21,7 @@ from typing import Any, TextIO
 from financecoffer.core.redaction import redact_text, redact_value
 
 LOGGER_NAME = "financecoffer"
+AUDIT_LOGGER_NAME = "audit"
 LOG_LEVEL_ENV = "FC_LOG_LEVEL"
 
 # Attributes present on every ``logging.LogRecord``; everything else is an
@@ -125,3 +126,37 @@ def get_logger(name: str | None = None) -> logging.Logger:
     if name == LOGGER_NAME or name.startswith(f"{LOGGER_NAME}."):
         return logging.getLogger(name)
     return logging.getLogger(f"{LOGGER_NAME}.{name}")
+
+
+def log_query_audit(
+    *,
+    tool: str,
+    trace_id: str | None = None,
+    symbol: str | None = None,
+    year_range: str | None = None,
+    since: str | None = None,
+    top_k: int | None = None,
+    hits: int | None = None,
+    elapsed_ms: float | None = None,
+    outcome: str = "ok",
+) -> None:
+    """Write one metadata-only audit record for a read query (S-10-1).
+
+    The signature deliberately has no ``query_text``: free-form query content
+    must never reach the audit trail, so there is no code path that can pass it.
+    """
+
+    get_logger(AUDIT_LOGGER_NAME).info(
+        "query audit",
+        extra={
+            "trace_id": trace_id,
+            "tool": tool,
+            "symbol": symbol,
+            "year_range": year_range,
+            "since": since,
+            "top_k": top_k,
+            "hits": hits,
+            "elapsed_ms": round(elapsed_ms, 3) if elapsed_ms is not None else None,
+            "outcome": outcome,
+        },
+    )

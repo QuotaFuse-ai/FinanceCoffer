@@ -1,7 +1,8 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.1（设计稿）
+版本：v0.2（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
+变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
 
 ## 1. 全局参数
 
@@ -69,13 +70,14 @@ fcoffer [GLOBAL OPTIONS] COMMAND [ARGS]...
 ```bash
 fcoffer init [--db-url URL] [--with-extensions] [--dry-run]
 fcoffer doctor [--check db,minio,redis,embedding,mcp] [--output json]
-fcoffer config show [--redact]
+fcoffer config show [--json] [--redact]
 fcoffer config check
 ```
 
 - `init`：创建 schema、扩展（`vector`）、基础表、分区与 HNSW 索引；可重复执行（幂等）。
 - `doctor`：逐项探测 PG 版本/扩展、MinIO bucket、Redis Stream、embedding 维度、MCP 协议帧。
-- `config show`：密钥默认脱敏。
+- `config show`：输出生效配置，密钥**始终**脱敏（DSN 密码、MinIO AccessKey/SecretKey、embedding key、MCP token 均显示为 `***`）；`--json` 走统一信封，`--redact` 仅为兼容保留。
+- `config check`：校验配置完整性，报告缺失项（不打印任何密钥）。
 
 ### 3.2 数据库
 
@@ -272,3 +274,23 @@ fcoffer skill install --target claude|cursor|codex [--path DIR] [--force]
 3. `dws` / `vector`
 4. `query` / `mcp` / `serve api` / `metrics`
 5. `archive` / `ingest backfill` / `tool` / `skill`
+
+## 5. 错误码
+
+错误码是 CLI / REST / MCP 共用的稳定契约：格式 `^E_[A-Z0-9_]{2,48}$`，只增不改（DEC-0007）。调用方遇到未知错误码一律按 `E_INTERNAL` 处理。
+
+| 错误码 | CLI 退出码 | REST HTTP | 含义 |
+| --- | --- | --- | --- |
+| `E_INTERNAL` | 1 | 500 | 未预期错误（响应不含堆栈） |
+| `E_INVALID_ARGUMENT` | 2 | 400 | 参数或请求体校验失败 |
+| `E_CONFIG` | 3 | 503 | 配置缺失或非法 |
+| `E_STORAGE` | 4 | 500 | PG / MinIO 等存储不可用 |
+| `E_DEPENDENCY` | 5 | 503 | Redis / embedding 等依赖不可用 |
+| `E_AUTH` | 6 | 401 | 鉴权失败 |
+| `E_PARTIAL_FAILURE` | 8 | 500 | 批量操作部分失败 |
+| `E_INTERRUPTED` | 130 | 500 | Ctrl-C 中断 |
+| `E_NOT_IMPLEMENTED` | 1 | 501 | 命令或接口尚未实现 |
+| `E_NOT_FOUND` | 1 | 404 | 目标不存在或无数据 |
+| `E_RATE_LIMITED` | 1 | 429 | 请求超过限流阈值，响应带 `Retry-After` |
+
+REST 限流默认开启：按客户端 IP 的进程内令牌桶，默认 120 次/分钟，仅作用于 `/v1/*`，`/health` 与 `/metrics` 不限流。`FC_RATE_LIMIT_ENABLED=false` 关闭；`FC_RATE_LIMIT_PER_MINUTE` 调整阈值（1–10000）。

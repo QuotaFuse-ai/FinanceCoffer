@@ -191,7 +191,7 @@ CREATE INDEX idx_ann_chunk_embedding
 
 - `GET /health`、`GET /metrics`
 - `GET /v1/structured/{symbol}`、`POST /v1/search/announcements`、`GET /v1/risk/{symbol}`
-- 统一返回信封：`{code, message, data, trace_id}`；错误码见 `docs/specs/cli.md` 第 6 节。
+- 统一返回信封：`{code, message, data, trace_id}`；错误码见 `docs/specs/cli.md` 第 5 节。
 
 ### 6.3 Skill SOP（`skills/financecoffer/SKILL.md`）
 
@@ -269,3 +269,4 @@ CREATE INDEX idx_ann_chunk_embedding
 | 2026-10-26 | v0.1 | 首版，依据 v1.0 文档更名并整理 |
 | 2026-10-26 | v0.2 | G-06 定案：embedding 改用本地 bge-m3 1024 维（DEC-0005），DDL、环境变量、CLI 同步更新 |
 | 2026-10-27 | v0.3 | G-11 改为运行时开关 `FC_COMPLIANCE_ENABLED`（默认关闭，DEC-0010）；§6.2 REST 接口进入实现范围 |
+| 2026-10-27 | v0.4 | T-017a：`cli.md` 新增错误码表（第 5 节），同步 §6.2 的交叉引用 |

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import typer
 
 from financecoffer.cli.options import GlobalOptions, from_context
@@ -9,6 +11,7 @@ from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
 from financecoffer.config.loader import load_config
 from financecoffer.core.errors import FinanceCofferError
+from financecoffer.core.logging import log_query_audit
 from financecoffer.query import MAX_RISK_LIMIT, MAX_TOP_K, STRUCTURED_METRICS, QueryService
 
 
@@ -18,6 +21,10 @@ def _service(options: GlobalOptions) -> QueryService:
     except FinanceCofferError as exc:
         emit_failure(options, exc)
     return QueryService(config=config, dsn=options.db_url, timeout=options.timeout)
+
+
+def _ms(started: float) -> float:
+    return (time.perf_counter() - started) * 1000.0
 
 
 def register(app: typer.Typer) -> None:
@@ -37,10 +44,28 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         options = from_context(ctx)
+        started = time.perf_counter()
         try:
             result = _service(options).structured(symbol, metric=metric, year_range=year_range)
         except FinanceCofferError as exc:
+            log_query_audit(
+                tool="query.structured",
+                trace_id=options.trace_id,
+                symbol=symbol,
+                year_range=year_range,
+                elapsed_ms=_ms(started),
+                outcome=exc.code.value,
+            )
             emit_failure(options, exc)
+        log_query_audit(
+            tool="query.structured",
+            trace_id=options.trace_id,
+            symbol=symbol,
+            year_range=year_range,
+            hits=len(result.data.get("years") or ()),
+            elapsed_ms=_ms(started),
+            outcome="ok",
+        )
         emit_success(options, result.data, meta=result.meta(options.trace_id))
 
     @query.command("risk", help="Query historical risk events.")
@@ -53,10 +78,28 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         options = from_context(ctx)
+        started = time.perf_counter()
         try:
             result = _service(options).risk(symbol, since=since, limit=limit)
         except FinanceCofferError as exc:
+            log_query_audit(
+                tool="query.risk",
+                trace_id=options.trace_id,
+                symbol=symbol,
+                since=since,
+                elapsed_ms=_ms(started),
+                outcome=exc.code.value,
+            )
             emit_failure(options, exc)
+        log_query_audit(
+            tool="query.risk",
+            trace_id=options.trace_id,
+            symbol=symbol,
+            since=since,
+            hits=result.data.get("count"),
+            elapsed_ms=_ms(started),
+            outcome="ok",
+        )
         emit_success(options, result.data, meta=result.meta(options.trace_id))
 
     search = add_group(app, name="search", help_text="Semantic search.")
@@ -72,10 +115,30 @@ def register(app: typer.Typer) -> None:
         top_k: int = typer.Option(10, "--top-k", min=1, max=MAX_TOP_K, help="Maximum hits."),
     ) -> None:
         options = from_context(ctx)
+        started = time.perf_counter()
         try:
             result = _service(options).search_announcements(
                 symbol, query_text, year_range=year_range, top_k=top_k
             )
         except FinanceCofferError as exc:
+            log_query_audit(
+                tool="search.announcements",
+                trace_id=options.trace_id,
+                symbol=symbol,
+                year_range=year_range,
+                top_k=top_k,
+                elapsed_ms=_ms(started),
+                outcome=exc.code.value,
+            )
             emit_failure(options, exc)
+        log_query_audit(
+            tool="search.announcements",
+            trace_id=options.trace_id,
+            symbol=symbol,
+            year_range=year_range,
+            top_k=top_k,
+            hits=result.data.get("count"),
+            elapsed_ms=_ms(started),
+            outcome="ok",
+        )
         emit_success(options, result.data, meta=result.meta(options.trace_id))

@@ -54,6 +54,11 @@ class Config(BaseModel):
     # all: nothing is written to, read from or returned from the marking columns.
     compliance_enabled: bool = False
 
+    # REST request limiting (S-07-2). In-process token bucket per client IP;
+    # `FC_RATE_LIMIT_ENABLED=false` disables it for local debugging.
+    rate_limit_enabled: bool = True
+    rate_limit_per_minute: int = Field(default=120, ge=1, le=10_000)
+
     # MCP / logging / archive
     mcp_token: SecretStr | None = None
     log_level: str = "INFO"
