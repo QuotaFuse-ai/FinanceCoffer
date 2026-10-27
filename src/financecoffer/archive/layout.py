@@ -75,7 +75,7 @@ TABLES: tuple[TableSpec, ...] = (
         model=StockFinancialSnapshot,
         kind="versioned",
         date_column="report_date",
-        pk_columns=("symbol", "report_date", "report_type", "version"),
+        pk_columns=("symbol", "report_date", "report_type", "statement", "version"),
         big_column="balance_check_result",
         big_is_json=True,
     ),

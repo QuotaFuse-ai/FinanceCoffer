@@ -268,6 +268,7 @@ def _seed(database: Database) -> dict[str, Any]:
                     symbol=SYMBOL,
                     report_date=REPORT_DATE,
                     report_type="annual",
+                    statement="income",
                     version=1,
                     amount_revenue=Decimal("100.0000"),
                     amount_net_profit=Decimal("10.0000"),
@@ -300,7 +301,7 @@ def _seed(database: Database) -> dict[str, Any]:
         "kline": (SYMBOL, OLD, "none", 1),
         "kline_hot": (SYMBOL, RECENT, "none", 1),
         "quote": (SYMBOL, OLD, 1),
-        "financial": (SYMBOL, REPORT_DATE, "annual", 1),
+        "financial": (SYMBOL, REPORT_DATE, "annual", "income", 1),
         "risk": _id_of(database, StockRiskEvent, "t012-risk-old"),
     }
 

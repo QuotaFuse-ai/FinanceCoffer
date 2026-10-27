@@ -168,6 +168,9 @@ class FinancialFields(BaseModel):
     report_type: str = Field(min_length=1)
     amount_revenue: DecimalString | None = None
     amount_net_profit: DecimalString | None = None
+    #: ``balance`` / ``income`` / ``cashflow``; several statements share one
+    #: report date, so the warehouse needs it to tell them apart.
+    statement: str | None = Field(default=None, max_length=20)
 
     @model_validator(mode="after")
     def _extra_amounts_are_strings(self) -> FinancialFields:

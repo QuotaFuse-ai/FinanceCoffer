@@ -70,7 +70,9 @@ class VersionedFactRepository(BaseRepository[ModelT]):
 
 class FinancialSnapshotRepository(VersionedFactRepository[StockFinancialSnapshot]):
     model = StockFinancialSnapshot
-    key_columns = ("symbol", "report_date", "report_type")
+    #: A report is published per statement, and each has its own revisions, so
+    #: the version chain is keyed by the statement as well (DEC-0019).
+    key_columns = ("symbol", "report_date", "report_type", "statement")
 
 
 class KlineRepository(VersionedFactRepository[StockKline]):

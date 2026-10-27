@@ -65,6 +65,7 @@ def seed_financial(
     *,
     report_date: str,
     report_type: str = "FY",
+    statement: str = "",
     revenue: Decimal | None = Decimal("1000000.0000"),
     profit: Decimal | None = Decimal("100000.0000"),
     quality: str = "normal",
@@ -77,6 +78,7 @@ def seed_financial(
             symbol=symbol,
             report_date=date.fromisoformat(report_date),
             report_type=report_type,
+            statement=statement,
             amount_revenue=revenue,
             amount_net_profit=profit,
             quality_status=quality,
@@ -85,7 +87,7 @@ def seed_financial(
             event_id=_event_id(
                 "fin",
                 symbol,
-                f"{report_date}:{report_type}:{quality}:{confidence}:{revenue}:{profit}",
+                f"{report_date}:{report_type}:{statement}:{quality}:{confidence}:{revenue}:{profit}",
             ),
             provider=PROVIDER,
             compliance_tier=tier,
@@ -349,6 +351,58 @@ def test_only_latest_version_and_annual_report_wins(db: Database) -> None:
     assert picked["version"] == 2
     assert picked["report_basis"] == "annual"
     assert picked["revenue"] == "200.0000"
+
+
+def test_statements_of_one_report_share_no_version_and_the_income_row_wins(
+    db: Database,
+) -> None:
+    symbol = "810034"
+    # One report arrives as three statements. Each is version 1 of its own chain
+    # and only the income statement carries revenue and net profit, so the wide
+    # row must read that one even though a later statement landed last.
+    seed_financial(
+        db,
+        symbol,
+        report_date="2025-12-31",
+        statement="income",
+        revenue=Decimal("900.0000"),
+        profit=Decimal("90.0000"),
+    )
+    seed_financial(
+        db,
+        symbol,
+        report_date="2025-12-31",
+        statement="balance",
+        revenue=None,
+        profit=None,
+    )
+    seed_financial(
+        db,
+        symbol,
+        report_date="2025-12-31",
+        statement="cashflow",
+        revenue=None,
+        profit=None,
+    )
+
+    with db.session_scope() as session:
+        versions = list(
+            session.scalars(
+                select(StockFinancialSnapshot.version)
+                .where(StockFinancialSnapshot.symbol == symbol)
+                .order_by(StockFinancialSnapshot.statement)
+            )
+        )
+    assert versions == [1, 1, 1]
+
+    with service(db) as svc:
+        assert svc.build([symbol], as_of="2026-01-15").counts["built"] == 1
+
+    row = wide_row(db, symbol)
+    assert row is not None
+    picked = year_record(row.metrics_json, 2025)
+    assert picked["revenue"] == "900.0000"
+    assert picked["net_profit"] == "90.0000"
 
 
 def test_period_reports_are_not_annualized_and_flag_ambiguity(db: Database) -> None:

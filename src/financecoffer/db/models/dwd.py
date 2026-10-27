@@ -44,12 +44,24 @@ class StockFinancialSnapshot(Base):
             "report_type",
             desc("version"),
         ),
+        Index(
+            "idx_fin_snapshot_symbol_statement",
+            "symbol",
+            "statement",
+            desc("report_date"),
+        ),
         {"schema": "dwd"},
     )
 
     symbol: Mapped[str] = mapped_column(String(20), primary_key=True)
     report_date: Mapped[date] = mapped_column(Date, primary_key=True)
     report_type: Mapped[str] = mapped_column(String(20), primary_key=True)
+    #: One report is published per statement (balance / income / cashflow) and
+    #: each carries its own facts, so a version chain belongs to a statement,
+    #: not to the report as a whole. Empty means the publisher sent none.
+    statement: Mapped[str] = mapped_column(
+        String(20), primary_key=True, server_default=text("''")
+    )
     version: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     amount_revenue: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
     amount_net_profit: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))

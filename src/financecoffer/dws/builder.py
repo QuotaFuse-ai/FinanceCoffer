@@ -263,6 +263,22 @@ def _present_year(
     }
 
 
+def _amount_rank(row: StockFinancialSnapshot) -> tuple[int, int, str]:
+    """Rank a financial row: how many amounts it carries, then its version.
+
+    One report is published as several statements (balance / income / cashflow)
+    that share a report date and type. The wide row reports revenue and net
+    profit, which only the income statement carries, so a row that actually holds
+    them wins over a later revision of a statement that does not -- and over the
+    rows ingested before the statement was stored, where the three statements had
+    collapsed into one version chain. The statement name only breaks ties, so two
+    rows that agree on amounts and version still order deterministically.
+    """
+
+    carried = int(row.amount_revenue is not None) + int(row.amount_net_profit is not None)
+    return carried, row.version, row.statement
+
+
 def _select_years(
     rows: Sequence[StockFinancialSnapshot],
     *,
@@ -271,12 +287,18 @@ def _select_years(
 ) -> tuple[list[_YearSelection], list[int]]:
     """Pick one report per window year: annual first, else the latest period."""
 
-    latest: dict[tuple[date, str], StockFinancialSnapshot] = {}
+    # Reduce every (report date, report type) to the row that best answers the
+    # wide row's question -- revenue and net profit -- with the newest revision
+    # of that statement winning.
+    by_report: dict[tuple[date, str], StockFinancialSnapshot] = {}
     for row in rows:
-        latest.setdefault((row.report_date, row.report_type), row)
+        key = (row.report_date, row.report_type)
+        current = by_report.get(key)
+        if current is None or _amount_rank(row) > _amount_rank(current):
+            by_report[key] = row
 
     by_year: dict[int, list[StockFinancialSnapshot]] = {}
-    for row in latest.values():
+    for row in by_report.values():
         by_year.setdefault(row.report_date.year, []).append(row)
 
     from_year = day.year - fiscal_years + 1
@@ -576,6 +598,7 @@ class DwsService:
                     StockFinancialSnapshot.report_date.desc(),
                     StockFinancialSnapshot.report_type.asc(),
                     StockFinancialSnapshot.version.desc(),
+                    StockFinancialSnapshot.statement.asc(),
                 )
             )
         )

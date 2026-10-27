@@ -57,6 +57,7 @@ def snapshot(**overrides: Any) -> dict[str, Any]:
         "symbol": "FS0001",
         "report_date": date(2026, 9, 30),
         "report_type": "Q3",
+        "statement": "income",
         "amount_revenue": Decimal("100.0000"),
         "amount_net_profit": Decimal("-5.5000"),
         "quality_status": "normal",
@@ -186,7 +187,7 @@ def test_versioned_fact_appends_and_never_updates_history(db: Database) -> None:
         assert latest.version == 2
         assert latest.amount_revenue == Decimal("200.0000")
 
-        original = repository.get("FS0001", date(2026, 9, 30), "Q3", 1)
+        original = repository.get("FS0001", date(2026, 9, 30), "Q3", "income", 1)
         assert original is not None
         assert original.amount_revenue == Decimal("100.0000")
 
@@ -242,7 +243,7 @@ def test_database_rejects_history_updates(db: Database) -> None:
 
     with db.session_scope() as session:
         row = FinancialSnapshotRepository(session).get(
-            "TRG001", date(2026, 9, 30), "Q3", 1
+            "TRG001", date(2026, 9, 30), "Q3", "income", 1
         )
         assert row is not None
         assert row.amount_revenue == Decimal("100.0000")

@@ -1,6 +1,6 @@
 # FinanceCoffer 事件契约（Event Contract v1）
 
-版本：v0.4（草案，待 TickHub 团队确认）
+版本：v0.5（草案，待 TickHub 团队确认）
 适用范围：TickHub-CN / TickHub-US → FinanceCoffer 的唯一数据入口。
 原则：事件即证据。FinanceCoffer 只做校验、落库、索引，不补算、不改写上游判定。
 
@@ -114,6 +114,7 @@
     "structured_fields": {
       "report_date": "2023-09-30",
       "report_type": "Q3",
+      "statement": "income",
       "amount_revenue": "123456789.0000",
       "amount_net_profit": "9876543.2100"
     },
@@ -130,7 +131,10 @@
 
 - 金额一律以**字符串**传输，避免 JSON float 精度丢失；落库转 `NUMERIC(20,4)`。
 - `quality_status` 必填，只接受 `normal/suspicious/bad`；`bad` 仍落库但打标，不拒绝。
-- 版本号由 FinanceCoffer 生成（`MAX(version)+1`），上游不传。
+- `statement` 可选，取值是上游原样的报表名（`balance` / `income` / `cashflow` 等），最多 20 字符；
+  一次财报会按报表分别发布，只有利润表带金额。存档层把它作为业务键的一部分，每个报表各自一条版本链（DEC-0019）。
+  上游不发时落库为空串，不推断、不补默认值。
+- 版本号由 FinanceCoffer 生成（`MAX(version)+1`，按 `(symbol, report_date, report_type, statement)` 各自计数），上游不传。
 
 ### 3.3 `kline`
 
@@ -323,3 +327,4 @@
 | 2026-10-26 | v0.2 | `event_id` 改为确定性哈希并新增 `biz_key`；补 `research` / `northbound` / `heartbeat`；补发布端要求、Stream 保留与 AOF；补 G-13/G-14 |
 | 2026-10-27 | v0.3 | G-10 收口：CN 数据事件补 `compliance_tier=C` 与 `commercial_use=false`（DEC-0009）；可选字段，不升 `schema_version` |
 | 2026-10-28 | v0.4 | 补 `source_info.hub` 与 ODS `source` 判定顺序（DEC-0017）；明确 ODS `symbol` 可空，市场级事件原样落 `null`；`heartbeat` 写明 upsert 语义、校验项与 backfill 排除 |
+| 2026-10-28 | v0.5 | `financial.structured_fields` 补可选 `statement`（报表名），版本链按报表切分；可选字段，不升 `schema_version`（DEC-0019） |

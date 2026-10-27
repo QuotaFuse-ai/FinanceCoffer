@@ -143,6 +143,9 @@ def _write_financial(
         symbol=_require_symbol(event),
         report_date=fields.report_date,
         report_type=fields.report_type,
+        # Stored verbatim: the statement is part of the business key, so an
+        # unnamed statement keeps the empty default instead of a guess.
+        statement=fields.statement or "",
         amount_revenue=_exact_numeric(
             fields.amount_revenue,
             precision=20,

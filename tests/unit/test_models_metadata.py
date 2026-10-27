@@ -37,7 +37,13 @@ TABLES = {
 
 PRIMARY_KEYS = {
     "ods.stock_raw_data": ("id", "fetch_time"),
-    "dwd.stock_financial_snapshot": ("symbol", "report_date", "report_type", "version"),
+    "dwd.stock_financial_snapshot": (
+        "symbol",
+        "report_date",
+        "report_type",
+        "statement",
+        "version",
+    ),
     "dwd.stock_announcement": ("id",),
     "dwd.stock_kline": ("symbol", "trade_date", "adjust", "version"),
     "dwd.stock_risk_event": ("id",),
@@ -142,6 +148,7 @@ INDEX_NAMES = {
     },
     "dwd.stock_financial_snapshot": {
         "idx_fin_snapshot_symbol_date",
+        "idx_fin_snapshot_symbol_statement",
         "idx_fin_snapshot_symbol_type_version",
     },
     "dwd.stock_announcement": {"idx_ann_symbol_date", "idx_ann_type_date"},
