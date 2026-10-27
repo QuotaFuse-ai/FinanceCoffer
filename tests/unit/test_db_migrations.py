@@ -13,7 +13,7 @@ def test_packaged_migrations_are_ordered_and_contiguous() -> None:
 
     versions = [item.version for item in migrations]
     assert versions == list(range(1, len(versions) + 1))
-    assert migrations[-1].version == 10
+    assert migrations[-1].version == 11
     names = [item.name for item in migrations]
     assert names == [
         "schemas",
@@ -26,6 +26,7 @@ def test_packaged_migrations_are_ordered_and_contiguous() -> None:
         "compliance",
         "ods_raw_text",
         "dwd_archive_columns",
+        "ods_symbol_nullable",
     ]
     for item in migrations:
         assert re.fullmatch(r"[0-9a-f]{64}", item.checksum)
@@ -64,7 +65,7 @@ def test_empty_directory_is_rejected(tmp_path) -> None:
 def test_render_sql_emits_every_migration_in_order() -> None:
     script = render_sql()
 
-    positions = [script.index(f"-- >>> {version:04d}_") for version in range(1, 11)]
+    positions = [script.index(f"-- >>> {version:04d}_") for version in range(1, 12)]
     assert positions == sorted(positions)
     assert script.rstrip().endswith(";")
     assert "CREATE TABLE IF NOT EXISTS ods.stock_raw_data" in script

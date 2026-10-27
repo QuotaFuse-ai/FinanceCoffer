@@ -21,7 +21,12 @@ from financecoffer.etl.client import close_client, create_client
 from financecoffer.etl.consumer import Consumer, ConsumeReport
 from financecoffer.etl.control import control_state, is_paused, pause, resume
 from financecoffer.etl.dlq import DlqRecord, enqueue_failure, retry_dlq
-from financecoffer.etl.processor import ProcessResult, classify_failure, process_payload
+from financecoffer.etl.processor import (
+    ProcessResult,
+    classify_failure,
+    process_payload,
+    record_heartbeat,
+)
 from financecoffer.etl.replay import replay_from_ods
 from financecoffer.etl.status import collect_status
 
@@ -39,6 +44,7 @@ __all__ = [
     "is_paused",
     "pause",
     "process_payload",
+    "record_heartbeat",
     "replay_from_ods",
     "resume",
     "retry_dlq",

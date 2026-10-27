@@ -94,11 +94,15 @@ class SourceInfo(BaseModel):
 
     Compliance fields are deliberately absent so nothing here reads or rewrites
     them; they remain available untouched in the caller's raw payload.
+    ``hub`` is the publishing hub (``tickhub-cn`` / ``tickhub-us``) and is what
+    the ODS ``source`` label is taken from; ``provider`` names the upstream
+    vendor (``cninfo``, ``tencent``, ...), not the hub.
     """
 
     model_config = ConfigDict(extra="allow")
 
     provider: str = Field(min_length=1)
+    hub: str | None = None
     crawl_url: str | None = None
     crawl_time: datetime | None = None
 
@@ -223,3 +227,75 @@ class RiskFields(BaseModel):
 class RiskContent(BaseContent):
     structured_fields: RiskFields
     source_announcement_ref: str | None = None
+
+
+class ResearchFields(BaseModel):
+    """Contract 3.6: one research report; ``pdf_url`` is a reference only."""
+
+    model_config = ConfigDict(extra="allow")
+
+    report_id: str | None = None
+    title: str | None = None
+    institution: str | None = None
+    analyst: str | None = None
+    rating: str | None = None
+    target_price: DecimalString | None = None
+    #: ``dwd.stock_research_report.publish_date`` is NOT NULL, so a report
+    #: without a publish date can never be stored and is rejected here instead.
+    publish_date: date
+    pdf_url: str | None = None
+
+
+class ResearchContent(BaseContent):
+    structured_fields: ResearchFields
+
+
+class NorthboundFields(BaseModel):
+    """Contract 3.7: market-level flow; the envelope carries ``symbol=null``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    trade_date: date
+    channel: str = Field(min_length=1)
+    net_buy_amount: DecimalString | None = None
+    buy_amount: DecimalString | None = None
+    sell_amount: DecimalString | None = None
+    currency: str = Field(default="CNY", min_length=1, max_length=3)
+
+
+class NorthboundContent(BaseContent):
+    structured_fields: NorthboundFields
+
+
+class HeartbeatStatus(StrEnum):
+    OK = "ok"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+
+class HeartbeatFields(BaseModel):
+    """Contract 3.8: one crawler round; ``run_id`` is the ``biz_key``.
+
+    A ``failed`` round must still be published -- otherwise "not running" and
+    "ran but collected nothing" look the same to the consumer.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    run_id: str = Field(min_length=1)
+    status: HeartbeatStatus
+    items_collected: int = Field(default=0, ge=0)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    next_run_at: datetime | None = None
+
+    @field_validator("started_at", "finished_at", "next_run_at")
+    @classmethod
+    def _utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+class HeartbeatContent(BaseContent):
+    structured_fields: HeartbeatFields

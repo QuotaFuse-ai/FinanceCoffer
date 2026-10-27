@@ -75,7 +75,34 @@ CONTENT: dict[str, dict[str, Any]] = {
             "summary": "material lawsuit disclosed",
         },
     },
+    "research": {
+        "quality_metrics": {"quality_status": "normal"},
+        "structured_fields": {
+            "report_id": "RPT-2026-001",
+            "title": "Q3 2026 review",
+            "institution": "Example Securities",
+            "analyst": "Li Lei",
+            "rating": "buy",
+            "target_price": "18.5000",
+            "publish_date": "2026-10-26",
+            "pdf_url": "minio://financecoffer/research/RPT-2026-001.pdf",
+        },
+    },
+    "northbound": {
+        "quality_metrics": {"quality_status": "normal"},
+        "structured_fields": {
+            "trade_date": "2026-10-27",
+            "channel": "sh-connect",
+            "net_buy_amount": "1234.5600",
+            "buy_amount": "2000.1000",
+            "sell_amount": "765.5400",
+            "currency": "CNY",
+        },
+    },
 }
+
+#: Contract section 4: these payloads carry no symbol.
+SYMBOL_OPTIONAL = {"northbound"}
 
 
 def payload(
@@ -85,15 +112,16 @@ def payload(
     content: dict[str, Any] | None = None,
     source_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    symbol = None if data_type in SYMBOL_OPTIONAL else SYMBOL
     body: dict[str, Any] = {
         "schema_version": "1.0",
         "event_id": events.compute_event_id(
-            provider=PROVIDER, data_type=data_type, symbol=SYMBOL, biz_key=biz_key
+            provider=PROVIDER, data_type=data_type, symbol=symbol, biz_key=biz_key
         ),
         "biz_key": biz_key,
         "event_time": "2026-10-27T10:00:00+08:00",
         "data_type": data_type,
-        "symbol": SYMBOL,
+        "symbol": symbol,
         "market": "CN",
         "source_info": {"provider": PROVIDER, "crawl_time": "2026-10-27T02:00:00Z"},
         "content": deepcopy(content if content is not None else CONTENT[data_type]),
@@ -111,7 +139,7 @@ def validated(data_type: str = "financial", **kwargs: Any):  # type: ignore[no-u
 
 @pytest.mark.parametrize(
     "data_type",
-    ["financial", "announcement", "kline", "quote", "risk"],
+    ["financial", "announcement", "kline", "quote", "risk", "research", "northbound"],
 )
 def test_write_event_dispatches_by_data_type(
     data_type: str, monkeypatch: pytest.MonkeyPatch
@@ -137,8 +165,78 @@ def test_write_event_dispatches_by_data_type(
     ]
 
 
-def test_unknown_data_type_is_rejected_with_the_supported_set() -> None:
-    event = replace(validated(), data_type=EventDataType.RESEARCH)
+def test_research_writer_maps_the_payload_and_reports_an_ignore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from financecoffer.db.repositories.dwd import ResearchReportRepository
+
+    captured: dict[str, Any] = {}
+
+    def insert_once(_self: Any, **values: Any) -> Any:
+        captured.update(values)
+        return None  # on_conflict_do_nothing matched: a replay
+
+    monkeypatch.setattr(ResearchReportRepository, "insert_once", insert_once)
+    event = validated("research")
+
+    outcome = write_event(object(), event, compliance_enabled=False)
+
+    assert outcome.status == "skipped"
+    assert outcome.table == "dwd.stock_research_report"
+    assert captured["symbol"] == SYMBOL
+    assert captured["report_id"] == "RPT-2026-001"
+    assert captured["institution"] == "Example Securities"
+    assert captured["target_price"] == Decimal("18.5000")
+    assert captured["publish_date"] == date(2026, 10, 26)
+    assert captured["pdf_url"] == "minio://financecoffer/research/RPT-2026-001.pdf"
+    assert captured["event_id"] == event.event_id
+    assert captured["provider"] == PROVIDER
+    assert captured["quality_status"] == "normal"
+
+
+def test_research_writer_rejects_a_price_the_column_would_round() -> None:
+    content = deepcopy(CONTENT["research"])
+    content["structured_fields"]["target_price"] = "18.12345"
+    event = validated("research", content=content)
+
+    with pytest.raises(InvalidArgumentError) as caught:
+        writer._write_research(
+            object(), event, {"compliance_tier": None, "commercial_use": None}
+        )
+
+    assert caught.value.details is not None
+    assert caught.value.details["field"] == "content.structured_fields.target_price"
+
+
+def test_northbound_writer_uses_the_channel_key_and_no_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from financecoffer.db.repositories.dwd import NorthboundFlowRepository
+
+    captured: dict[str, Any] = {}
+
+    def insert_once(_self: Any, **values: Any) -> Any:
+        captured.update(values)
+        return None
+
+    monkeypatch.setattr(NorthboundFlowRepository, "insert_once", insert_once)
+    event = validated("northbound")
+
+    outcome = write_event(object(), event, compliance_enabled=False)
+
+    assert outcome.status == "skipped"
+    assert outcome.table == "dwd.northbound_flow"
+    assert "symbol" not in captured
+    assert captured["trade_date"] == date(2026, 10, 27)
+    assert captured["channel"] == "sh-connect"
+    assert captured["market"] == "CN"
+    assert captured["net_buy_amount"] == Decimal("1234.5600")
+    assert captured["currency"] == "CNY"
+    assert captured["event_id"] == event.event_id
+
+
+def test_heartbeat_has_no_dwd_table_and_says_where_it_goes() -> None:
+    event = replace(validated(), data_type=EventDataType.HEARTBEAT)
 
     with pytest.raises(InvalidArgumentError) as caught:
         write_event(object(), event, compliance_enabled=False)
@@ -146,8 +244,31 @@ def test_unknown_data_type_is_rejected_with_the_supported_set() -> None:
     details = caught.value.details
     assert details is not None
     assert details["field"] == "data_type"
-    assert details["value"] == "research"
-    assert details["supported"] == ["announcement", "financial", "kline", "quote", "risk"]
+    assert details["value"] == "heartbeat"
+    assert details["supported"] == [
+        "announcement",
+        "financial",
+        "kline",
+        "northbound",
+        "quote",
+        "research",
+        "risk",
+    ]
+    assert details["hint"] == (
+        "heartbeat is recorded in ops.source_heartbeat and never reaches DWD"
+    )
+
+
+def test_every_modelled_payload_has_a_dwd_writer() -> None:
+    assert set(writer._WRITERS) == {
+        EventDataType.FINANCIAL,
+        EventDataType.ANNOUNCEMENT,
+        EventDataType.KLINE,
+        EventDataType.QUOTE,
+        EventDataType.RISK,
+        EventDataType.RESEARCH,
+        EventDataType.NORTHBOUND,
+    }
 
 
 def test_missing_symbol_is_rejected() -> None:

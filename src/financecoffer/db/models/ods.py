@@ -49,7 +49,9 @@ class StockRawData(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     event_id: Mapped[str] = mapped_column(String(100))
     data_type: Mapped[str] = mapped_column(String(50))
-    symbol: Mapped[str] = mapped_column(String(20))
+    #: ``None`` for contract payloads that describe a market rather than a
+    #: stock (``northbound``); a missing symbol is never replaced by a fake one.
+    symbol: Mapped[str | None] = mapped_column(String(20))
     market: Mapped[str | None] = mapped_column(String(10))
     source: Mapped[str] = mapped_column(String(50))
     biz_key: Mapped[str] = mapped_column(String(200))

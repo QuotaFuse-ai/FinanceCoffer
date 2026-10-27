@@ -5,7 +5,10 @@ The writer is the only place where an event's payload becomes a DWD row:
 * versioned facts (financial / kline / quote) append ``MAX(version) + 1`` for a
   business key; a replayed ``event_id`` is skipped and never bumps a version;
 * announcements dedupe on both ``event_id`` and ``content_hash``;
-* risk events are inserted once by ``event_id``;
+* risk events, research reports and northbound flow are inserted once by
+  ``event_id`` (northbound additionally by ``(trade_date, channel)``);
+* ``heartbeat`` has no DWD table at all: it is recorded in
+  ``ops.source_heartbeat`` and never reaches ODS/DWD/DWS (contract 3.8);
 * quality metrics are copied through untouched -- a ``bad`` event still lands;
 * money stays :class:`~decimal.Decimal` end to end and is rejected when it is
   not exactly representable in the column's ``NUMERIC(p, 4)`` precision, so the
@@ -32,17 +35,21 @@ from sqlalchemy.orm import Session
 from financecoffer.core.compliance import columns as compliance_columns
 from financecoffer.core.errors import InvalidArgumentError
 from financecoffer.db.models.dwd import (
+    NorthboundFlow,
     StockAnnouncement,
     StockFinancialSnapshot,
     StockKline,
     StockQuoteSnapshot,
+    StockResearchReport,
     StockRiskEvent,
 )
 from financecoffer.db.repositories.dwd import (
     AnnouncementRepository,
     FinancialSnapshotRepository,
     KlineRepository,
+    NorthboundFlowRepository,
     QuoteSnapshotRepository,
+    ResearchReportRepository,
     RiskEventRepository,
 )
 from financecoffer.events.models import (
@@ -50,7 +57,9 @@ from financecoffer.events.models import (
     EventDataType,
     FinancialContent,
     KlineContent,
+    NorthboundContent,
     QuoteContent,
+    ResearchContent,
     RiskContent,
 )
 from financecoffer.events.validation import ValidatedEvent
@@ -108,12 +117,18 @@ def write_event(
 
     handler = _WRITERS.get(event.data_type)
     if handler is None:
+        hint = (
+            "heartbeat is recorded in ops.source_heartbeat and never reaches DWD"
+            if event.data_type is EventDataType.HEARTBEAT
+            else "no DWD table for this data_type"
+        )
         raise InvalidArgumentError(
             f"no DWD table for data_type={event.data_type.value}",
             details={
                 "field": "data_type",
                 "value": event.data_type.value,
                 "supported": sorted(item.value for item in _WRITERS),
+                "hint": hint,
             },
         )
     return handler(session, event, _compliance_values(event, compliance_enabled))
@@ -253,12 +268,83 @@ def _write_risk(
     return _outcome(StockRiskEvent, event, row)
 
 
+def _write_research(
+    session: Session, event: ValidatedEvent, compliance: Mapping[str, Any]
+) -> WriteOutcome:
+    """One research report per ``event_id``; ``pdf_url`` stays a reference."""
+
+    content = cast(ResearchContent, event.content)
+    fields = content.structured_fields
+    row = ResearchReportRepository(session).insert_once(
+        symbol=_require_symbol(event),
+        report_id=fields.report_id,
+        title=fields.title,
+        institution=fields.institution,
+        analyst=fields.analyst,
+        rating=fields.rating,
+        target_price=_exact_numeric(
+            fields.target_price,
+            precision=20,
+            field_name="content.structured_fields.target_price",
+        ),
+        publish_date=fields.publish_date,
+        pdf_url=fields.pdf_url,
+        **_quality_values(event),
+        fetch_time=fetch_time_for(event),
+        event_id=event.event_id,
+        provider=event.provider,
+        **compliance,
+    )
+    return _outcome(StockResearchReport, event, row)
+
+
+def _write_northbound(
+    session: Session, event: ValidatedEvent, compliance: Mapping[str, Any]
+) -> WriteOutcome:
+    """Daily per-channel flow is immutable: ``(trade_date, channel)`` is the key.
+
+    ``symbol`` is null by contract, so this writer never asks for one.
+    """
+
+    content = cast(NorthboundContent, event.content)
+    fields = content.structured_fields
+    row = NorthboundFlowRepository(session).insert_once(
+        trade_date=fields.trade_date,
+        channel=fields.channel,
+        market=event.market.value,
+        net_buy_amount=_exact_numeric(
+            fields.net_buy_amount,
+            precision=24,
+            field_name="content.structured_fields.net_buy_amount",
+        ),
+        buy_amount=_exact_numeric(
+            fields.buy_amount,
+            precision=24,
+            field_name="content.structured_fields.buy_amount",
+        ),
+        sell_amount=_exact_numeric(
+            fields.sell_amount,
+            precision=24,
+            field_name="content.structured_fields.sell_amount",
+        ),
+        currency=fields.currency,
+        **_quality_values(event),
+        fetch_time=fetch_time_for(event),
+        event_id=event.event_id,
+        provider=event.provider,
+        **compliance,
+    )
+    return _outcome(NorthboundFlow, event, row)
+
+
 _WRITERS: dict[EventDataType, _Handler] = {
     EventDataType.FINANCIAL: _write_financial,
     EventDataType.ANNOUNCEMENT: _write_announcement,
     EventDataType.KLINE: _write_kline,
     EventDataType.QUOTE: _write_quote,
     EventDataType.RISK: _write_risk,
+    EventDataType.RESEARCH: _write_research,
+    EventDataType.NORTHBOUND: _write_northbound,
 }
 
 

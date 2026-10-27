@@ -1,6 +1,6 @@
 # FinanceCoffer 事件契约（Event Contract v1）
 
-版本：v0.3（草案，待 TickHub 团队确认）
+版本：v0.4（草案，待 TickHub 团队确认）
 适用范围：TickHub-CN / TickHub-US → FinanceCoffer 的唯一数据入口。
 原则：事件即证据。FinanceCoffer 只做校验、落库、索引，不补算、不改写上游判定。
 
@@ -38,11 +38,14 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `provider` | string | 是 | 例如 `eastmoney` / `sec_edgar` |
+| `provider` | string | 是 | 上游数据商，例如 `eastmoney` / `cninfo` / `sec_edgar`；**不是** Hub 名 |
+| `hub` | string | 否 | 发布该事件的 Hub：`tickhub-cn` / `tickhub-us`。ODS `source` 以此为准；缺省时消费端按 `provider` → Hub 映射推断 |
 | `crawl_url` | string | 否 | 原始地址，落 ODS 便于回溯 |
 | `crawl_time` | string | 否 | RFC3339 |
 | `compliance_tier` | string | 否 | 复用 TickHub-US 的 `S/B/C/D/X`；CN 数据统一记 `C`（DEC-0009） |
 | `commercial_use` | bool | 否 | 是否允许商用；CN / US 数据事件均为 `false`（DEC-0006 / DEC-0009），D 级数据落库后查询端默认屏蔽 |
+
+**ODS `source` 的判定顺序**（DEC-0017）：`source_info.hub` → `provider` 本身是 Hub 名（`heartbeat` 即如此）→ `provider` → Hub 映射表 → 兜底 `manual`。`provider` 是数据商，直接拿它当来源会把每一条真实事件都标成 `manual`。
 
 ### 2.2 发布端要求（上游必须满足）
 
@@ -213,6 +216,7 @@
 ```
 
 规则：`pdf_url` 只存引用，FinanceCoffer 不代下载；若上游已上传 MinIO，改传 `object_ref`。
+`publish_date` 是必填项（`dwd.stock_research_report` 上该列 NOT NULL）：缺失即按 `reason="schema"` 拒绝，不拿 `event_time` 顶替——补算日期属于「只存不算」的禁区。
 
 ### 3.7 `northbound`（北向资金，TickHub-CN 归档已有）
 
@@ -239,7 +243,7 @@
 }
 ```
 
-规则：`symbol` 为 `null`（市场级指标）；`biz_key` = `trade_date|channel`。
+规则：`symbol` 为 `null`（市场级指标）；`biz_key` = `trade_date|channel`。ODS 原样保留 `symbol=null`（DEC-0017），DWD `dwd.northbound_flow` 以 `(trade_date, channel)` 为键。
 
 ### 3.8 `heartbeat`（上游存活信号）
 
@@ -270,8 +274,9 @@
 
 - `status` 取 `ok` / `partial` / `failed`；即使 `failed` 也必须发，否则无法区分「没在跑」与「跑了但没数据」。
 - `biz_key` = `run_id`；同一轮重发得到同一 `event_id`。
-- 消费端写入 `ops.source_heartbeat(source, last_seen, status, items, run_id)`，暴露 `fc_source_last_seen_seconds`；超过 2 个采集周期未更新即告警。
-- `heartbeat` 不落 ODS，不参与 DWD/DWS。
+- 消费端以 `source` 为键 upsert `ops.source_heartbeat(source, last_seen, status, items, run_id)`，暴露 `fc_source_last_seen_seconds`；超过 2 个采集周期未更新即告警。
+- `heartbeat` 不落 ODS，不参与 DWD/DWS；`fcoffer ingest backfill` 也不回放它（回放的是数据，不是存活信号）。
+- `status` 与 `items_collected` 都参与校验：`status` 只接受三个枚举值，`items_collected` 不得为负；`started_at` / `finished_at` / `next_run_at` 统一归一到 UTC。
 
 ## 4. 校验与拒绝规则
 
@@ -317,3 +322,4 @@
 | 2026-10-26 | v0.1 | 首版：信封、五类事件、校验、重试 |
 | 2026-10-26 | v0.2 | `event_id` 改为确定性哈希并新增 `biz_key`；补 `research` / `northbound` / `heartbeat`；补发布端要求、Stream 保留与 AOF；补 G-13/G-14 |
 | 2026-10-27 | v0.3 | G-10 收口：CN 数据事件补 `compliance_tier=C` 与 `commercial_use=false`（DEC-0009）；可选字段，不升 `schema_version` |
+| 2026-10-28 | v0.4 | 补 `source_info.hub` 与 ODS `source` 判定顺序（DEC-0017）；明确 ODS `symbol` 可空，市场级事件原样落 `null`；`heartbeat` 写明 upsert 语义、校验项与 backfill 排除 |

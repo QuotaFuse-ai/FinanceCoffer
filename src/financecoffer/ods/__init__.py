@@ -10,6 +10,7 @@ from __future__ import annotations
 from financecoffer.ods.landing import (
     DEFAULT_SOURCE,
     INITIAL_ETL_STATUS,
+    ODS_HUBS,
     ODS_SOURCES,
     LandingResult,
     ensure_partition,
@@ -39,6 +40,7 @@ __all__ = [
     "INITIAL_ETL_STATUS",
     "MAX_LIMIT",
     "MAX_REPLAY",
+    "ODS_HUBS",
     "ODS_SOURCES",
     "LandingResult",
     "OdsService",

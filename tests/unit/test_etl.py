@@ -15,10 +15,13 @@ from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 import redis
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import Insert as PostgresInsert
 from sqlalchemy.exc import SQLAlchemyError
 
 from financecoffer.core.config import Config
@@ -42,11 +45,16 @@ from financecoffer.etl.metrics import (
 )
 from financecoffer.etl.processor import (
     FailureInfo,
+    HeartbeatResult,
     ProcessResult,
     classify_failure,
     parse_entry_fields,
+    process_payload,
+    record_heartbeat,
 )
 from financecoffer.etl.status import collect_status
+from financecoffer.events import validate_event
+from financecoffer.events.registration import RegistrationResult
 
 # -- fakes -------------------------------------------------------------------
 
@@ -792,3 +800,217 @@ def test_failure_info_as_dict_is_stable() -> None:
     info = FailureInfo(reason="schema", message="bad", retryable=False)
 
     assert info.as_dict() == {"reason": "schema", "message": "bad", "retryable": False}
+
+
+# -- heartbeat routing -------------------------------------------------------
+
+
+HEARTBEAT_PAYLOAD: dict[str, Any] = {
+    "schema_version": "1.0",
+    "event_id": "",
+    "biz_key": "run-20261027-0200",
+    "event_time": "2026-10-27T10:00:00+08:00",
+    "data_type": "heartbeat",
+    "symbol": None,
+    "market": "CN",
+    "source_info": {"provider": "tickhub-cn"},
+    "content": {
+        "quality_metrics": {"quality_status": "normal"},
+        "structured_fields": {
+            "run_id": "run-20261027-0200",
+            "status": "ok",
+            "items_collected": 42,
+            "started_at": "2026-10-27T01:50:00Z",
+            "finished_at": "2026-10-27T02:00:00Z",
+            "next_run_at": "2026-10-27T02:30:00Z",
+        },
+    },
+    "trace_id": "trace-heartbeat",
+}
+
+
+def heartbeat_event():  # type: ignore[no-untyped-def]
+    from financecoffer.events import compute_event_id
+
+    payload = dict(HEARTBEAT_PAYLOAD)
+    payload["event_id"] = compute_event_id(
+        provider="tickhub-cn", data_type="heartbeat", symbol=None, biz_key=payload["biz_key"]
+    )
+    return validate_event(payload)
+
+
+class _OneRow:
+    def __init__(self, row: Any) -> None:
+        self._row = row
+
+    def one(self) -> Any:
+        return self._row
+
+
+class _HeartbeatSession:
+    """Just enough ``Session`` for ``HeartbeatRepository.record``."""
+
+    def __init__(self, row: Any) -> None:
+        self.row = row
+        self.statements: list[Any] = []
+
+    def scalars(self, statement: Any) -> _OneRow:
+        self.statements.append(statement)
+        return _OneRow(self.row)
+
+
+def test_record_heartbeat_upserts_ops_source_heartbeat() -> None:
+    from financecoffer.db.models.ops import SourceHeartbeat
+
+    event = heartbeat_event()
+    row = SourceHeartbeat(
+        source="tickhub-cn",
+        last_seen=datetime(2026, 10, 27, 2, 0, tzinfo=UTC),
+        status="ok",
+        items=42,
+        run_id="run-20261027-0200",
+    )
+    session = _HeartbeatSession(row)
+
+    result = record_heartbeat(session, event)
+
+    assert isinstance(result, HeartbeatResult)
+    assert result.as_dict() == {
+        "source": "tickhub-cn",
+        "last_seen": "2026-10-27T02:00:00Z",
+        "status": "ok",
+        "items": 42,
+        "run_id": "run-20261027-0200",
+    }
+    [statement] = session.statements
+    assert isinstance(statement, PostgresInsert)
+    assert statement.table.name == "source_heartbeat"
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+    assert "ON CONFLICT (source) DO UPDATE" in sql
+
+
+def test_record_heartbeat_honours_the_source_override() -> None:
+    from financecoffer.db.models.ops import SourceHeartbeat
+
+    event = heartbeat_event()
+    row = SourceHeartbeat(
+        source="tickhub-cn",
+        last_seen=datetime(2026, 10, 27, 2, 0, tzinfo=UTC),
+        status="ok",
+        items=42,
+        run_id="run-20261027-0200",
+    )
+    session = _HeartbeatSession(row)
+
+    record_heartbeat(session, event, source="backfill")
+
+    [statement] = session.statements
+    params = statement.compile(dialect=postgresql.dialect()).params
+    assert params["source"] == "backfill"
+    assert params["last_seen"] == datetime(2026, 10, 27, 2, 0, tzinfo=UTC)
+    assert params["status"] == "ok"
+    assert params["items"] == 42
+
+
+def test_heartbeat_without_finished_at_uses_event_time_as_last_seen() -> None:
+    from financecoffer.events import compute_event_id
+
+    payload = dict(HEARTBEAT_PAYLOAD)
+    payload["event_time"] = "2026-10-27T09:15:00+08:00"
+    payload["content"] = {
+        "quality_metrics": {"quality_status": "normal"},
+        "structured_fields": {
+            "run_id": "run-20261027-0200",
+            "status": "partial",
+            "items_collected": 0,
+        },
+    }
+    payload["event_id"] = compute_event_id(
+        provider="tickhub-cn", data_type="heartbeat", symbol=None, biz_key=payload["biz_key"]
+    )
+    event = validate_event(payload)
+    from financecoffer.db.models.ops import SourceHeartbeat
+
+    row = SourceHeartbeat(
+        source="tickhub-cn",
+        last_seen=datetime(2026, 10, 27, 1, 15, tzinfo=UTC),
+        status="partial",
+        items=0,
+        run_id="run-20261027-0200",
+    )
+    session = _HeartbeatSession(row)
+
+    record_heartbeat(session, event)
+
+    [statement] = session.statements
+    params = statement.compile(dialect=postgresql.dialect()).params
+    assert params["last_seen"] == datetime(2026, 10, 27, 1, 15, tzinfo=UTC)
+
+
+def test_process_payload_routes_heartbeat_without_touching_ods_or_dwd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import financecoffer.etl.processor as processor
+
+    event = heartbeat_event()
+    calls: list[str] = []
+
+    class FakeEventLog:
+        def __init__(self, _session: Any) -> None:
+            pass
+
+        def begin(self, _event_id: str) -> None:
+            calls.append("begin")
+
+        def succeed(self, _event_id: str) -> None:
+            calls.append("succeed")
+
+    monkeypatch.setattr(
+        processor, "validate_event", lambda payload, compliance_enabled: event
+    )
+    monkeypatch.setattr(
+        processor,
+        "register_event",
+        lambda session, event: RegistrationResult(
+            event_id=event.event_id, duplicate=False, reason="new", status="processing", attempts=1
+        ),
+    )
+    monkeypatch.setattr(processor, "EventLogRepository", FakeEventLog)
+    monkeypatch.setattr(
+        processor,
+        "record_heartbeat",
+        lambda session, event: calls.append("heartbeat") or _stub_result(),
+    )
+    monkeypatch.setattr(
+        processor,
+        "land_event",
+        lambda *args, **kwargs: pytest.fail("heartbeat must never reach ODS"),
+    )
+    monkeypatch.setattr(
+        processor,
+        "write_event",
+        lambda *args, **kwargs: pytest.fail("heartbeat must never reach DWD"),
+    )
+
+    result = process_payload(
+        object(),
+        payload={"any": "thing"},
+        raw_text="{}",
+        compliance_enabled=False,
+    )
+
+    assert calls == ["begin", "heartbeat", "succeed"]
+    assert result.status == "written"
+    assert result.event_log_status == "done"
+    assert result.ods_id is None
+    assert result.dwd_table is None
+
+
+def _stub_result() -> HeartbeatResult:
+    return HeartbeatResult(
+        source="tickhub-cn",
+        last_seen=datetime(2026, 10, 27, 2, 0, tzinfo=UTC),
+        status="ok",
+        items=42,
+        run_id="run-20261027-0200",
+    )

@@ -1,7 +1,7 @@
 """Event contract validation (T-004).
 
-Positive samples for the five payloads, precision and error-shape checks, and the
-DEC-0010 compliance switch in both positions. ``ingest event --validate-only``
+Positive samples for every payload type, precision and error-shape checks, and
+the DEC-0010 compliance switch in both positions. ``ingest event --validate-only``
 is exercised end to end because it is the documented contract-check entry point.
 """
 
@@ -18,7 +18,7 @@ from typer.testing import CliRunner
 
 from financecoffer import events
 from financecoffer.cli import app
-from financecoffer.core.errors import InvalidArgumentError, NotImplementedYetError
+from financecoffer.core.errors import InvalidArgumentError
 from financecoffer.events import models, validation
 
 PROVIDER = "eastmoney"
@@ -73,20 +73,64 @@ CONTENT: dict[str, dict[str, Any]] = {
             "summary": "material lawsuit disclosed",
         },
     },
-    "research": {},
+    "research": {
+        "quality_metrics": {"quality_status": "normal"},
+        "structured_fields": {
+            "report_id": "RPT-2026-001",
+            "title": "Q3 2026 review",
+            "institution": "Example Securities",
+            "analyst": "Li Lei",
+            "rating": "buy",
+            "target_price": "18.50",
+            "publish_date": "2026-10-26",
+            "pdf_url": "minio://financecoffer/research/RPT-2026-001.pdf",
+        },
+    },
+    "northbound": {
+        "quality_metrics": {"quality_status": "normal"},
+        "structured_fields": {
+            "trade_date": "2026-10-27",
+            "channel": "sh-connect",
+            "net_buy_amount": "1234.5600",
+            "buy_amount": "2000.1000",
+            "sell_amount": "765.5400",
+            "currency": "CNY",
+        },
+    },
+    "heartbeat": {
+        "quality_metrics": {"quality_status": "normal"},
+        "structured_fields": {
+            "run_id": "run-20261027-0200",
+            "status": "ok",
+            "items_collected": 42,
+            "started_at": "2026-10-27T01:50:00Z",
+            "finished_at": "2026-10-27T02:00:00Z",
+            "next_run_at": "2026-10-27T02:30:00Z",
+        },
+    },
+}
+
+#: Contract section 4: these payloads describe a market or a crawler round.
+SYMBOL_OPTIONAL = {"northbound", "heartbeat"}
+
+DEFAULT_BIZ_KEYS = {
+    "northbound": "2026-10-27|sh-connect",
+    "heartbeat": "run-20261027-0200",
 }
 
 
 def payload(data_type: str = "financial", **overrides: Any) -> dict[str, Any]:
+    symbol = None if data_type in SYMBOL_OPTIONAL else SYMBOL
+    biz_key = DEFAULT_BIZ_KEYS.get(data_type, BIZ_KEY)
     event: dict[str, Any] = {
         "schema_version": "1.0",
         "event_id": events.compute_event_id(
-            provider=PROVIDER, data_type=data_type, symbol=SYMBOL, biz_key=BIZ_KEY
+            provider=PROVIDER, data_type=data_type, symbol=symbol, biz_key=biz_key
         ),
-        "biz_key": BIZ_KEY,
+        "biz_key": biz_key,
         "event_time": "2026-10-27T10:00:00+08:00",
         "data_type": data_type,
-        "symbol": SYMBOL,
+        "symbol": symbol,
         "market": "CN",
         "source_info": {
             "provider": PROVIDER,
@@ -248,11 +292,84 @@ def test_announcement_requires_a_body() -> None:
     assert "raw_html or clean_content" in errors[0]["reason"]
 
 
-def test_unmodelled_data_types_are_reported_as_not_implemented() -> None:
-    with pytest.raises(NotImplementedYetError) as caught:
-        events.validate_event(payload("research"))
+@pytest.mark.parametrize("data_type", ["research", "northbound", "heartbeat"])
+def test_every_contract_data_type_has_a_payload_model(data_type: str) -> None:
+    event = events.validate_event(payload(data_type))
 
-    assert caught.value.details["data_type"] == "research"
+    assert event.data_type.value == data_type
+    assert event.summary()["quality_status"] == "normal"
+
+
+@pytest.mark.parametrize("data_type", ["northbound", "heartbeat"])
+def test_market_and_heartbeat_payloads_accept_a_null_symbol(data_type: str) -> None:
+    event = events.validate_event(payload(data_type))
+
+    assert event.symbol is None
+
+
+def test_northbound_keeps_its_decimal_amounts_exact() -> None:
+    event = events.validate_event(payload("northbound"))
+    fields = event.content.structured_fields  # type: ignore[attr-defined]
+
+    assert fields.net_buy_amount == Decimal("1234.5600")
+    assert fields.currency == "CNY"
+
+
+def test_northbound_channel_is_required() -> None:
+    event = payload("northbound")
+    event["content"]["structured_fields"].pop("channel")
+
+    errors, details = problems(event)
+
+    assert details["reason"] == "schema"
+    assert errors[0]["field"] == "content.structured_fields.channel"
+
+
+def test_heartbeat_status_is_restricted_to_the_contract_values() -> None:
+    event = payload("heartbeat")
+    event["content"]["structured_fields"]["status"] = "healthy"
+
+    errors, _ = problems(event)
+
+    assert errors[0]["field"] == "content.structured_fields.status"
+
+
+def test_heartbeat_items_collected_cannot_be_negative() -> None:
+    event = payload("heartbeat")
+    event["content"]["structured_fields"]["items_collected"] = -1
+
+    errors, _ = problems(event)
+
+    assert errors[0]["field"] == "content.structured_fields.items_collected"
+
+
+def test_heartbeat_timestamps_are_normalized_to_utc() -> None:
+    event = payload("heartbeat")
+    event["content"]["structured_fields"]["finished_at"] = "2026-10-27T10:00:00+08:00"
+
+    validated = events.validate_event(event)
+    fields = validated.content.structured_fields  # type: ignore[attr-defined]
+
+    assert fields.finished_at == datetime(2026, 10, 27, 2, 0, tzinfo=UTC)
+
+
+def test_research_requires_a_publish_date_for_the_dwd_row() -> None:
+    event = payload("research")
+    event["content"]["structured_fields"].pop("publish_date")
+
+    errors, _ = problems(event)
+
+    assert errors[0]["field"] == "content.structured_fields.publish_date"
+
+
+def test_research_target_price_must_be_a_decimal_string() -> None:
+    event = payload("research")
+    event["content"]["structured_fields"]["target_price"] = 18.5
+
+    errors, _ = problems(event)
+
+    assert errors[0]["field"] == "content.structured_fields.target_price"
+    assert "decimal string" in errors[0]["reason"]
 
 
 def test_compliance_fields_are_ignored_when_the_switch_is_off() -> None:

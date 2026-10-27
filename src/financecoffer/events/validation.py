@@ -25,7 +25,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from financecoffer.core.compliance import ComplianceMark, extract_mark
-from financecoffer.core.errors import InvalidArgumentError, NotImplementedYetError
+from financecoffer.core.errors import InvalidArgumentError
 from financecoffer.events.models import (
     MAX_EVENT_BYTES,
     AnnouncementContent,
@@ -33,9 +33,12 @@ from financecoffer.events.models import (
     EventDataType,
     EventEnvelope,
     FinancialContent,
+    HeartbeatContent,
     KlineContent,
     Market,
+    NorthboundContent,
     QuoteContent,
+    ResearchContent,
     RiskContent,
     SourceInfo,
 )
@@ -47,12 +50,14 @@ _CONTENT_MODELS: dict[EventDataType, type[BaseContent]] = {
     EventDataType.KLINE: KlineContent,
     EventDataType.QUOTE: QuoteContent,
     EventDataType.RISK: RiskContent,
+    EventDataType.RESEARCH: ResearchContent,
+    EventDataType.NORTHBOUND: NorthboundContent,
+    EventDataType.HEARTBEAT: HeartbeatContent,
 }
 
-#: Contract types that exist in the envelope but have no payload model yet.
-_UNSUPPORTED_TYPES = frozenset(
-    {EventDataType.RESEARCH, EventDataType.NORTHBOUND, EventDataType.HEARTBEAT}
-)
+#: Contract section 4: these payloads describe a market or a crawler round, so
+#: they legitimately carry ``symbol=null``; every other type requires one.
+_SYMBOL_OPTIONAL_TYPES = frozenset({EventDataType.NORTHBOUND, EventDataType.HEARTBEAT})
 
 _REASON_SCHEMA = "schema"
 _REASON_EVENT_ID = "event_id"
@@ -127,8 +132,7 @@ def validate_event(
     """Validate one event payload and return its normalized form.
 
     Raises ``InvalidArgumentError`` with ``details.errors`` when the payload
-    breaks the contract, and ``NotImplementedYetError`` for contract types whose
-    payload model has not landed yet (research / northbound / heartbeat).
+    breaks the contract; every ``data_type`` in the contract has a model.
     """
 
     raw = dict(payload)
@@ -139,12 +143,6 @@ def validate_event(
             "event does not match the event contract",
             details={"errors": _problems_from(exc), "reason": _REASON_SCHEMA},
         ) from exc
-
-    if envelope.data_type in _UNSUPPORTED_TYPES:
-        raise NotImplementedYetError(
-            f"payload validation for data_type={envelope.data_type.value} is not implemented yet",
-            details={"field": "data_type", "data_type": envelope.data_type.value},
-        )
 
     problems: list[Problem] = []
     problems.extend(_check_symbol(envelope))
@@ -208,6 +206,8 @@ def _parse_content(envelope: EventEnvelope, problems: list[Problem]) -> BaseCont
 
 def _check_symbol(envelope: EventEnvelope) -> list[Problem]:
     if not envelope.symbol:
+        if envelope.data_type in _SYMBOL_OPTIONAL_TYPES:
+            return []
         return [
             {
                 "field": "symbol",

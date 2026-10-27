@@ -29,7 +29,31 @@ from financecoffer.events.validation import ValidatedEvent
 
 ODS_SOURCES: tuple[str, ...] = ("tickhub-cn", "tickhub-us", "backfill", "manual")
 DEFAULT_SOURCE = "manual"
-_SOURCE_BY_PROVIDER = {"tickhub-cn": "tickhub-cn", "tickhub-us": "tickhub-us"}
+
+#: Hubs that publish into FinanceCoffer. ``source_info.hub`` names one of these.
+ODS_HUBS: tuple[str, ...] = ("tickhub-cn", "tickhub-us")
+
+#: Fallback for events published before ``source_info.hub`` existed: the hub
+#: that collects each vendor. ``source_info.provider`` is the *vendor*
+#: (``cninfo``, ``tencent``, ...), never the hub, so reading it as the ODS
+#: source would label every real event ``manual``.
+_HUB_BY_VENDOR: dict[str, str] = {
+    # TickHub-CN vendors
+    "eastmoney": "tickhub-cn",
+    "eastmoney_datacenter": "tickhub-cn",
+    "cninfo": "tickhub-cn",
+    "sse": "tickhub-cn",
+    "szse": "tickhub-cn",
+    "tencent": "tickhub-cn",
+    "sina": "tickhub-cn",
+    "xueqiu": "tickhub-cn",
+    "ths": "tickhub-cn",
+    # TickHub-US vendors
+    "sec_edgar": "tickhub-us",
+    "finnhub": "tickhub-us",
+    "polygon": "tickhub-us",
+    "yfinance": "tickhub-us",
+}
 
 INITIAL_ETL_STATUS = "pending"
 
@@ -71,7 +95,14 @@ def fetch_time_for(event: ValidatedEvent) -> datetime:
 
 
 def resolve_source(event: ValidatedEvent, *, source: str | None = None) -> str:
-    """Pick the ODS ``source`` label: override, then provider, then ``manual``."""
+    """Pick the ODS ``source`` label: override, then the publishing hub, then ``manual``.
+
+    The hub comes from ``source_info.hub`` when the publisher sends it; events
+    published before that field existed fall back to the vendor -> hub map, so
+    a ``cninfo`` announcement still lands as ``tickhub-cn`` instead of
+    ``manual``. Only a payload that matches no known hub or vendor -- a hand
+    written file, a test fixture -- is labelled ``manual``.
+    """
 
     if source is not None:
         normalized = source.strip().lower()
@@ -81,7 +112,15 @@ def resolve_source(event: ValidatedEvent, *, source: str | None = None) -> str:
                 details={"field": "source", "value": source},
             )
         return normalized
-    return _SOURCE_BY_PROVIDER.get(event.provider.strip().lower(), DEFAULT_SOURCE)
+    hub = (event.source_info.hub or "").strip().lower()
+    if hub in ODS_HUBS:
+        return hub
+    provider = event.provider.strip().lower()
+    # Heartbeats and some hub-native payloads name the hub itself as the
+    # provider; that is a hub label, not a vendor.
+    if provider in ODS_HUBS:
+        return provider
+    return _HUB_BY_VENDOR.get(provider, DEFAULT_SOURCE)
 
 
 def partition_name_for(when: datetime) -> tuple[str, str]:
@@ -129,13 +168,9 @@ def land_event(
             "raw_text must carry the upstream payload",
             details={"field": "raw_text"},
         )
-    symbol = event.symbol
-    if symbol is None:
-        raise InvalidArgumentError(
-            "symbol is required to land an ODS record",
-            details={"field": "symbol"},
-        )
-
+    # ``symbol`` is nullable here on purpose: validation already rejects a
+    # missing symbol for every stock-level type, and a market-level payload
+    # (``northbound``) reaches ODS with ``symbol=null`` rather than a fake one.
     fetch_time = fetch_time_for(event)
     resolved_source = resolve_source(event, source=source)
     partition = ensure_partition(session, fetch_time)
@@ -143,7 +178,7 @@ def land_event(
     row = RawDataRepository(session).append(
         event_id=event.event_id,
         data_type=event.data_type.value,
-        symbol=symbol,
+        symbol=event.symbol,
         market=event.market.value,
         source=resolved_source,
         biz_key=event.biz_key,

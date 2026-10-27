@@ -38,7 +38,6 @@ from financecoffer.db.models.ods import StockRawData
 from financecoffer.events import ValidatedEvent
 from financecoffer.ods import landing, service
 from financecoffer.ods.landing import (
-    DEFAULT_SOURCE,
     fetch_time_for,
     land_event,
     partition_name_for,
@@ -169,6 +168,7 @@ def payload(
     biz_key: str = BIZ_KEY,
     event_time: str = "2026-10-27T10:00:00+08:00",
     crawl_time: str | None = CRAWL_TIME,
+    hub: str | None = None,
 ) -> dict[str, Any]:
     source_info: dict[str, Any] = {
         "provider": provider,
@@ -176,6 +176,8 @@ def payload(
     }
     if crawl_time is not None:
         source_info["crawl_time"] = crawl_time
+    if hub is not None:
+        source_info["hub"] = hub
     return {
         "schema_version": "1.0",
         "event_id": events.compute_event_id(
@@ -261,7 +263,7 @@ def test_land_event_appends_a_pending_row_without_rewriting_the_payload() -> Non
 
     assert result.record_id == 1
     assert result.event_id == event.event_id
-    assert result.source == DEFAULT_SOURCE
+    assert result.source == "tickhub-cn"
     assert result.partition == "ods.stock_raw_data_202610"
     assert result.etl_status == "pending"
     assert result.as_dict()["fetch_time"] == "2026-10-27T02:00:00Z"
@@ -271,7 +273,7 @@ def test_land_event_appends_a_pending_row_without_rewriting_the_payload() -> Non
     assert row.data_type == "financial"
     assert row.symbol == "600000"
     assert row.market == "CN"
-    assert row.source == "manual"
+    assert row.source == "tickhub-cn"
     assert row.biz_key == BIZ_KEY
     assert row.fetch_time == datetime(2026, 10, 27, 2, 0, tzinfo=UTC)
     assert row.etl_status == "pending"
@@ -310,21 +312,54 @@ def test_land_event_rejects_an_empty_payload() -> None:
     assert caught.value.details == {"field": "raw_text"}
 
 
-def test_land_event_requires_a_symbol() -> None:
+def test_land_event_keeps_a_market_level_payload_without_a_symbol() -> None:
+    # ``northbound`` is market-wide, so the contract carries ``symbol=null``.
+    # ODS stores exactly that -- no placeholder symbol is invented (rule 1).
     event = replace(validated(), symbol=None)
+    session = FakeSession()
 
-    with pytest.raises(InvalidArgumentError) as caught:
-        land_event(FakeSession(), event, raw_text='{"n": 1}')
+    result = land_event(session, event, raw_text='{"net_buy_amount": "1.5"}')
 
-    assert caught.value.details == {"field": "symbol"}
+    assert result.record_id == 1
+    [row] = session.added
+    assert row.symbol is None
+    assert row.event_id == event.event_id
+    assert row.source == "tickhub-cn"
 
 
 @pytest.mark.parametrize(
     ("provider", "expected"),
-    [("tickhub-cn", "tickhub-cn"), ("tickhub-us", "tickhub-us"), (PROVIDER, "manual")],
+    [
+        # ``provider`` is the upstream vendor, never the hub name.
+        (PROVIDER, "tickhub-cn"),
+        ("cninfo", "tickhub-cn"),
+        ("tencent", "tickhub-cn"),
+        ("sec_edgar", "tickhub-us"),
+        ("finnhub", "tickhub-us"),
+        # A payload that names the hub itself (heartbeats do) keeps that label.
+        ("tickhub-cn", "tickhub-cn"),
+        ("tickhub-us", "tickhub-us"),
+        # Neither a known hub nor a known vendor: an operator/hand-written file.
+        ("unknown_vendor", "manual"),
+    ],
 )
-def test_resolve_source_follows_the_provider(provider: str, expected: str) -> None:
+def test_resolve_source_maps_vendors_to_their_publishing_hub(
+    provider: str, expected: str
+) -> None:
     assert resolve_source(validated(provider=provider)) == expected
+
+
+@pytest.mark.parametrize("hub", ["tickhub-cn", "tickhub-us"])
+def test_resolve_source_prefers_the_hub_marker(hub: str) -> None:
+    event = validated(provider="unknown_vendor", hub=hub)
+
+    assert resolve_source(event) == hub
+
+
+def test_resolve_source_ignores_an_unknown_hub_marker() -> None:
+    event = validated(provider="cninfo", hub="some-other-hub")
+
+    assert resolve_source(event) == "tickhub-cn"
 
 
 def test_resolve_source_accepts_an_explicit_override() -> None:

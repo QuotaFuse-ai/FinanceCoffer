@@ -9,6 +9,10 @@ visible in ``etl status``. The caller owns the transaction:
 * a failure rolls all of them back, so a poisoned event never leaves a dirty
   ODS row behind and the event log does not claim it was processed.
 
+``heartbeat`` is the exception: contract 3.8 says it is liveness state, not
+history, so it is upserted into ``ops.source_heartbeat`` and never lands in
+ODS, DWD or DWS.
+
 Duplicates are reported, not raised. ``force`` is reserved for ``etl dlq
 retry``: it lets a previously failed event be written again, but never past a
 ``done`` event and never past a business identity owned by another event id.
@@ -20,7 +24,8 @@ import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from datetime import UTC, datetime
+from typing import Any, Literal, cast
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -32,11 +37,13 @@ from financecoffer.core.errors import (
     NotImplementedYetError,
     StorageError,
 )
-from financecoffer.db.repositories.ops import EventLogRepository
+from financecoffer.db.repositories.ops import EventLogRepository, HeartbeatRepository
 from financecoffer.dwd import write_event
 from financecoffer.events import register_event, validate_event
+from financecoffer.events.models import EventDataType, HeartbeatContent
 from financecoffer.events.registration import RegistrationResult
-from financecoffer.ods import land_event
+from financecoffer.events.validation import ValidatedEvent
+from financecoffer.ods import land_event, resolve_source
 
 _log = logging.getLogger(__name__)
 
@@ -92,6 +99,28 @@ class FailureInfo:
 
     def as_dict(self) -> dict[str, Any]:
         return {"reason": self.reason, "message": self.message, "retryable": self.retryable}
+
+
+@dataclass(frozen=True)
+class HeartbeatResult:
+    """The ``ops.source_heartbeat`` row one heartbeat event refreshed."""
+
+    source: str
+    last_seen: datetime
+    status: str
+    items: int
+    run_id: str | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "last_seen": self.last_seen.astimezone(UTC).isoformat(timespec="seconds").replace(
+                "+00:00", "Z"
+            ),
+            "status": self.status,
+            "items": self.items,
+            "run_id": self.run_id,
+        }
 
 
 _REASON_MAX = 100
@@ -181,6 +210,37 @@ def dump_payload(payload: Mapping[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
+def record_heartbeat(
+    session: Session, event: ValidatedEvent, *, source: str | None = None
+) -> HeartbeatResult:
+    """Upsert ``ops.source_heartbeat`` for one heartbeat event.
+
+    ``last_seen`` is the round's ``finished_at`` when the publisher sent one
+    (the moment the hub was last alive) and ``event_time`` otherwise. The row
+    is keyed by ``source``, so a heartbeat overwrites the previous state
+    instead of accumulating history -- that is why replaying it from a backfill
+    is refused.
+    """
+
+    fields = cast(HeartbeatContent, event.content).structured_fields
+    last_seen = fields.finished_at or event.event_time
+    resolved = source or resolve_source(event)
+    row = HeartbeatRepository(session).record(
+        resolved,
+        last_seen=last_seen,
+        status=fields.status.value,
+        items=fields.items_collected,
+        run_id=fields.run_id,
+    )
+    return HeartbeatResult(
+        source=row.source,
+        last_seen=row.last_seen,
+        status=row.status,
+        items=row.items,
+        run_id=row.run_id,
+    )
+
+
 def process_payload(
     session: Session,
     *,
@@ -214,6 +274,16 @@ def process_payload(
 
     event_log = EventLogRepository(session)
     event_log.begin(registration.event_id)
+    if event.data_type is EventDataType.HEARTBEAT:
+        record_heartbeat(session, event)
+        event_log.succeed(registration.event_id)
+        return ProcessResult(
+            status="written",
+            event_id=registration.event_id,
+            reason=registration.reason,
+            event_log_status="done",
+        )
+
     landing = land_event(session, event, raw_text=raw_text)
     fact = write_event(session, event, compliance_enabled=compliance_enabled)
     event_log.succeed(registration.event_id)
@@ -241,6 +311,7 @@ def _reprocess_allowed(registration: RegistrationResult, *, force: bool) -> bool
 
 __all__ = [
     "FailureInfo",
+    "HeartbeatResult",
     "PAYLOAD_FIELD",
     "ProcessResult",
     "classify_failure",
@@ -248,4 +319,5 @@ __all__ = [
     "event_id_hint",
     "parse_entry_fields",
     "process_payload",
+    "record_heartbeat",
 ]
