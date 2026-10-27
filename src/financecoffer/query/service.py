@@ -41,7 +41,7 @@ MAX_TOP_K = 50
 MAX_RISK_LIMIT = 200
 MAX_QUERY_CHARS = 2000
 
-_SYMBOL = re.compile(r"^(?:\d{6}|[A-Z][A-Z0-9.\-]{0,9})$")
+_SYMBOL = re.compile(r"^(?:[0-9]{6}|[A-Z][A-Z0-9.\-]{0,9})$")
 _YEAR_RANGE = re.compile(r"^(\d{4})-(\d{4})$")
 _YEAR_KEYS = ("year", "fiscal_year", "report_year", "fy")
 _YEAR_CONTAINERS = ("metrics", "years", "annual", "fiscal_years")

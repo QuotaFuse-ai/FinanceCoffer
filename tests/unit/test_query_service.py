@@ -140,7 +140,17 @@ def test_normalize_symbol_accepts_documented_forms(raw: str, expected: str) -> N
 
 @pytest.mark.parametrize(
     "raw",
-    ["", "   ", "12345", "1234567", "600001;DROP TABLE", "AA PL", "A" * 12, "0700.HK"],
+    [
+        "",
+        "   ",
+        "12345",
+        "1234567",
+        "600001;DROP TABLE",
+        "AA PL",
+        "A" * 12,
+        "0700.HK",
+        "１１１１１１",
+    ],
 )
 def test_normalize_symbol_rejects_everything_else(raw: str) -> None:
     with pytest.raises(InvalidArgumentError) as excinfo:
