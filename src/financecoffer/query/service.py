@@ -22,6 +22,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 from financecoffer.core.compliance import ComplianceMark
 from financecoffer.core.config import Config
@@ -546,7 +547,9 @@ class QueryService:
         if self.config.embedding_api_key is not None:
             headers["Authorization"] = f"Bearer {self.config.embedding_api_key.get_secret_value()}"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
+            # A local embedding service must never be routed through the host's HTTP proxy.
+            trust_env = (urlsplit(url).hostname or "") not in {"127.0.0.1", "localhost", "::1"}
+            with httpx.Client(timeout=self.timeout, trust_env=trust_env) as client:
                 response = client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
                 body = response.json()

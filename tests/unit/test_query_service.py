@@ -471,6 +471,60 @@ def test_search_rejects_top_k_outside_the_contract(monkeypatch) -> None:
     assert db.calls == 0
 
 
+# -- embedding client --------------------------------------------------------
+
+
+class _EmbeddingResponse:
+    def __init__(self, vector: list[float]) -> None:
+        self._vector = vector
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return {"data": [{"embedding": self._vector}]}
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("http://127.0.0.1:8001/v1/embeddings", False),
+        ("http://localhost:8001/v1/embeddings", False),
+        ("https://api.openai.com/v1/embeddings", True),
+    ],
+)
+def test_embed_bypasses_the_system_proxy_for_loopback(
+    monkeypatch: pytest.MonkeyPatch, url: str, expected: bool
+) -> None:
+    import httpx
+
+    seen: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            seen.update(kwargs)
+
+        def __enter__(self) -> FakeClient:
+            return self
+
+        def __exit__(self, *exc_info: Any) -> bool:
+            return False
+
+        def post(self, *args: Any, **kwargs: Any) -> _EmbeddingResponse:
+            return _EmbeddingResponse([0.0] * 1023 + [1.0])
+
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    service = QueryService(
+        config=Config(db_url=DSN, embedding_url=url),
+        connector=FakeDB([], STRUCTURED_COLUMNS),
+    )
+
+    vector = service._embed("revenue")
+
+    assert seen["trust_env"] is expected
+    assert vector.count(",") == 1023
+
+
 # -- statement timeout -------------------------------------------------------
 
 
