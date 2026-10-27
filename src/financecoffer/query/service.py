@@ -214,9 +214,19 @@ class QueryService:
         return self.config.compliance_enabled
 
     def _connect(self) -> Any:
-        return self.connector(
+        conn = self.connector(
             resolve_dsn(self.dsn or self.config.db_url), timeout=self.timeout
         )
+        # ``connect_timeout`` only bounds connection establishment; without a
+        # server-side ``statement_timeout`` a slow query (e.g. a vector scan)
+        # would run unbounded (S-07). ``set_config`` accepts a bound parameter,
+        # plain ``SET`` does not.
+        if self.timeout > 0:
+            conn.execute(
+                "SELECT set_config('statement_timeout', %s, false)",
+                (str(int(self.timeout) * 1000),),
+            )
+        return conn
 
     def ping(self) -> bool:
         """Return whether the warehouse answers ``SELECT 1`` (never raises)."""

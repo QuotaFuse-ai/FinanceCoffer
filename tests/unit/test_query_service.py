@@ -83,6 +83,7 @@ class _Cursor:
 class _Conn:
     def __init__(self, cursor: _Cursor) -> None:
         self._cursor = cursor
+        self.executed: list[tuple[str, tuple[Any, ...]]] = []
 
     def __enter__(self) -> _Conn:
         return self
@@ -93,6 +94,9 @@ class _Conn:
     def cursor(self) -> _Cursor:
         return self._cursor
 
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
+        self.executed.append((sql, tuple(params)))
+
 
 class FakeDB:
     """Minimal psycopg stand-in: records SQL/params and replays fixed rows."""
@@ -102,12 +106,14 @@ class FakeDB:
         self.dsn: str | None = None
         self.timeout: int | None = None
         self.calls = 0
+        self.conn: _Conn | None = None
 
     def __call__(self, dsn: str, *, timeout: int) -> _Conn:
         self.calls += 1
         self.dsn = dsn
         self.timeout = timeout
-        return _Conn(self.cursor)
+        self.conn = _Conn(self.cursor)
+        return self.conn
 
 
 def _service(
@@ -453,6 +459,42 @@ def test_search_rejects_top_k_outside_the_contract(monkeypatch) -> None:
         service.search_announcements("600000", "revenue", top_k=MAX_TOP_K + 1)
 
     assert db.calls == 0
+
+
+# -- statement timeout -------------------------------------------------------
+
+
+def test_connect_enforces_a_server_side_statement_timeout() -> None:
+    service, db = _service([_structured_row([])], STRUCTURED_COLUMNS)
+
+    service.structured("600000")
+
+    assert db.conn is not None
+    sql, params = db.conn.executed[0]
+    assert "set_config('statement_timeout'" in sql
+    assert params == ("30000",)
+
+
+def test_connect_converts_the_timeout_to_milliseconds() -> None:
+    db = FakeDB([_structured_row([])], STRUCTURED_COLUMNS)
+    service = QueryService(
+        config=Config(db_url=DSN), timeout=7, connector=db
+    )
+
+    service.risk("600000")
+
+    assert db.conn is not None
+    assert db.conn.executed[0][1] == ("7000",)
+
+
+def test_connect_can_disable_the_statement_timeout() -> None:
+    db = FakeDB([_structured_row([])], STRUCTURED_COLUMNS)
+    service = QueryService(config=Config(db_url=DSN), timeout=0, connector=db)
+
+    service.structured("600000")
+
+    assert db.conn is not None
+    assert db.conn.executed == []
 
 
 # -- readiness ---------------------------------------------------------------
