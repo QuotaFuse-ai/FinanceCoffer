@@ -258,7 +258,7 @@ us_collector/
 取舍建议：
 
 - **内部研究、不对外分发、不提供付费报告** → 用 `false`。每条事件落 `source_info.compliance_tier` + `warnings`，FinanceCoffer 查询端按级门禁（D 级不出现在对外输出），并保留“仅个人研究”标注。
-- **对外商业产品 / 为客户出具分析** → 必须用 `true`，并补 Polygon 订阅（或等价授权源）；接受覆盖缺口，财报用 SEC EDGAR/XBRL 兜底。
+- **对外商业产品 / 对外出具分析** → 必须用 `true`，并补 Polygon 订阅（或等价授权源）；接受覆盖缺口，财报用 SEC EDGAR/XBRL 兜底。
 
 **已定（2026-10-26，DEC-0006）：用 `false`。** 配置写死 `FC_COLLECT_COMMERCIAL_USE=false`，不允许运行时切换；每条事件写入 `source_info.commercial_use=false`。后续若转对外商业，必须重新采集，不能用 `false` 口径的历史数据对外输出。
 

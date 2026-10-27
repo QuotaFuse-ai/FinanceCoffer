@@ -146,7 +146,7 @@ fcoffer ingest webhook --host 127.0.0.1 --port 8101 [--token TOKEN]
 ```
 
 - `ingest backfill` 只用于一次性迁移/对账，不作为运行时取数通道；执行时在 ODS 标记 `source=backfill`。
-- `ingest event` 是上游事件格式的契约验证入口，测试工程师用它做对照测试。
+- `ingest event` 是上游事件格式的契约验证入口，测试团队用它做对照测试。
   默认行为是「校验 → `ops.etl_event_log` 幂等登记 → 追加 ODS」，两步在**同一事务**内完成：
   分区缺失导致 ODS 写入失败时，事件日志登记一并回滚，事件可原样重投。
   `--validate-only` 只校验、不连库。

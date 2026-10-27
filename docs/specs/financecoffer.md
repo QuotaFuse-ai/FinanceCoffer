@@ -242,7 +242,7 @@ CREATE INDEX idx_ann_chunk_embedding
 
 ## 10. 验收口径
 
-测试工程师按本文与 `requirements-traceability.md` 逐条比对；安全工程师按 S-01…S-10 检查边界。最低通过线：
+测试团队按本文与 `requirements-traceability.md` 逐条比对；安全团队按 S-01…S-10 检查边界。最低通过线：
 
 1. 文档中出现的每个表、字段、索引、约束均可在迁移脚本中找到对应实现（补齐项须在决策记录说明）。
 2. 三个 MCP 工具可按文档签名调用并返回可回溯出处。
