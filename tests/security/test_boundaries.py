@@ -1,9 +1,20 @@
 """Regression tests for REST / query-layer security boundaries.
 
 Covers S-01 (SQL injection), S-02 (unbounded vector scan), S-03 (REST bind
-address), S-06 (secret leakage), S-07 (large-query DoS) and S-10 (audit /
-trace propagation). No live PostgreSQL is required: the query layer is driven
-through an in-memory connector, and the REST layer through ``TestClient``.
+address), S-05 (object-key traversal), S-06 (secret leakage), S-07
+(large-query DoS), S-08 (compliance marking gate) and S-10 (audit / trace
+propagation). No live PostgreSQL or object store is required: the query layer
+is driven through an in-memory connector, the REST layer through
+``TestClient``, and the archive key layout through plain value objects.
+
+Two traceability rows are deliberately not turned into pytest cases here:
+
+* S-04 (least-privilege database role) - the repository ships no read-only role
+  or read-only DSN, so there is nothing to assert against yet; it stays an
+  implementation gap and is reported rather than papered over.
+* S-09 (hardened container / dependency audit) - the image already runs as a
+  non-root user in ``deploy/Dockerfile``; vulnerability scanning runs out of
+  band in CI, not inside this suite.
 """
 
 from __future__ import annotations
@@ -11,6 +22,7 @@ from __future__ import annotations
 import io
 import json
 from datetime import date
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import quote
 
@@ -19,13 +31,20 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from financecoffer.api import create_app
+from financecoffer.archive.layout import TABLES, key_from_url, object_key
 from financecoffer.cli import app as cli_app
+from financecoffer.core.compliance import ComplianceMark, columns, extract_mark
 from financecoffer.core.config import Config
 from financecoffer.core.envelope import Meta
-from financecoffer.core.errors import InvalidArgumentError, NotFoundError
+from financecoffer.core.errors import (
+    InvalidArgumentError,
+    NotFoundError,
+    StorageError,
+)
 from financecoffer.core.logging import configure_logging, get_logger
 from financecoffer.core.redaction import REDACTED
 from financecoffer.core.trace import normalize_trace_id
+from financecoffer.events import compute_event_id, validate_event
 from financecoffer.query.service import (
     MAX_QUERY_CHARS,
     MAX_RISK_LIMIT,
@@ -430,3 +449,130 @@ def test_query_meta_carries_the_request_trace() -> None:
     result = QueryResult(data={"symbol": "600000"}, source="dws")
     assert result.meta("trace-1").trace_id == "trace-1"
     assert isinstance(Meta(), Meta)
+
+
+# -- S-05: archive object keys never escape their prefix or bucket -----------
+
+HOSTILE_SEGMENTS = (
+    "../../etc/passwd",
+    "..\\..\\windows\\win.ini",
+    "600000\x00/../../x",
+    "a/b/c",
+    "",
+)
+
+
+def _announcement_spec():
+    return next(item for item in TABLES if item.name == "stock_announcement")
+
+
+@pytest.mark.parametrize("hostile", HOSTILE_SEGMENTS)
+def test_archive_keys_cannot_escape_the_configured_prefix(hostile: str) -> None:
+    row = SimpleNamespace(id=7, symbol=hostile, ann_date=date(2020, 1, 2))
+
+    key = object_key(_announcement_spec(), row, prefix="test/s05")
+
+    assert key.startswith("test/s05/dwd/stock_announcement/")
+    assert key.endswith("/2020/7.txt")
+    segments = key.split("/")
+    # base, table, symbol, year, leaf -> a hostile symbol adds no segment.
+    assert len(segments) == 7
+    assert ".." not in segments
+    assert "." not in segments
+    assert "\x00" not in key
+    assert "\\" not in key
+    assert "//" not in key
+
+
+def test_archive_restore_only_reads_from_the_configured_bucket() -> None:
+    key = "dwd/stock_announcement/600000/2020/7.txt"
+
+    assert key_from_url(f"minio://financecoffer/{key}", "financecoffer") == key
+    assert key_from_url(f"s3://financecoffer/{key}", "financecoffer") == key
+
+    foreign = (
+        "minio://other-bucket/dwd/stock_announcement/600000/2020/7.txt",
+        "s3://other-bucket/dwd/stock_announcement/600000/2020/7.txt",
+        "https://minio.local/financecoffer/x.txt",
+        "../../etc/passwd",
+    )
+    for url in foreign:
+        with pytest.raises(StorageError) as excinfo:
+            key_from_url(url, "financecoffer")
+        assert excinfo.value.details["bucket"] == "financecoffer"
+
+
+# -- S-08: compliance marking is gated by the switch -------------------------
+
+
+def _financial_event(**source_info: Any) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "schema_version": "1.0",
+        "event_id": compute_event_id(
+            provider="sec-s08", data_type="financial", symbol="600000", biz_key="2026-09-30|Q3"
+        ),
+        "biz_key": "2026-09-30|Q3",
+        "event_time": "2026-10-27T10:00:00+08:00",
+        "data_type": "financial",
+        "symbol": "600000",
+        "market": "CN",
+        "source_info": {"provider": "sec-s08", "crawl_time": "2026-10-27T02:00:00Z", **source_info},
+        "content": {
+            "quality_metrics": {"quality_status": "normal", "confidence": "high"},
+            "structured_fields": {
+                "report_date": "2026-09-30",
+                "report_type": "Q3",
+                "amount_revenue": "1500000.0000",
+                "amount_net_profit": "120000.0000",
+            },
+        },
+        "trace_id": "trace-s08",
+    }
+    return body
+
+
+def test_compliance_columns_are_blank_when_the_switch_is_off() -> None:
+    assert extract_mark(None, enabled=False) is None
+    assert extract_mark({"compliance_tier": "B", "commercial_use": True}, enabled=False) is None
+    assert columns(None) == {"compliance_tier": None, "commercial_use": None}
+
+
+def test_compliance_marking_requires_a_known_tier_and_a_boolean_flag() -> None:
+    with pytest.raises(InvalidArgumentError) as missing_tier:
+        extract_mark({"commercial_use": True}, enabled=True)
+    assert missing_tier.value.details["field"] == "source_info.compliance_tier"
+
+    with pytest.raises(InvalidArgumentError) as bad_tier:
+        extract_mark({"compliance_tier": "Z", "commercial_use": True}, enabled=True)
+    assert bad_tier.value.details["field"] == "source_info.compliance_tier"
+
+    with pytest.raises(InvalidArgumentError) as bad_flag:
+        extract_mark({"compliance_tier": "B", "commercial_use": "yes"}, enabled=True)
+    assert bad_flag.value.details["field"] == "source_info.commercial_use"
+
+
+def test_a_valid_mark_is_normalised_and_copied_into_the_columns() -> None:
+    mark = extract_mark({"compliance_tier": " b ", "commercial_use": False}, enabled=True)
+
+    assert mark == ComplianceMark(tier="B", commercial_use=False)
+    assert columns(mark) == {"compliance_tier": "B", "commercial_use": False}
+
+
+def test_an_unmarked_event_is_rejected_only_while_the_switch_is_on() -> None:
+    body = _financial_event()
+
+    validate_event(body, compliance_enabled=False)
+
+    with pytest.raises(InvalidArgumentError) as excinfo:
+        validate_event(body, compliance_enabled=True)
+    details = excinfo.value.details or {}
+    assert details["reason"] == "compliance"
+    assert details["errors"][0]["field"] == "source_info.compliance_tier"
+
+
+def test_the_tier_reaches_response_meta_only_when_marked() -> None:
+    marked = QueryResult(data={"symbol": "600000"}, source="dws", compliance=ComplianceMark("B", True))
+    assert marked.meta("trace-1").compliance_tier == "B"
+
+    plain = QueryResult(data={"symbol": "600000"}, source="dws")
+    assert plain.meta("trace-1").compliance_tier is None
