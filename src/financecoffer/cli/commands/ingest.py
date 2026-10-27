@@ -17,6 +17,7 @@ from financecoffer.config.loader import load_config
 from financecoffer.core.envelope import Meta
 from financecoffer.core.errors import FinanceCofferError, InvalidArgumentError, StorageError
 from financecoffer.db.session import Database
+from financecoffer.dwd import write_event
 from financecoffer.events import register_event, validate_event
 from financecoffer.ods import land_event
 
@@ -93,11 +94,17 @@ def register(app: typer.Typer) -> None:
                 try:
                     with database.session_scope() as session:
                         registration = register_event(session, validated)
-                        landing = (
-                            None
-                            if registration.duplicate
-                            else land_event(session, validated, raw_text=original_text)
-                        )
+                        landing = None
+                        fact = None
+                        if not registration.duplicate:
+                            landing = land_event(
+                                session, validated, raw_text=original_text
+                            )
+                            fact = write_event(
+                                session,
+                                validated,
+                                compliance_enabled=config.compliance_enabled,
+                            )
                 except SQLAlchemyError as exc:
                     raise StorageError(
                         "event registration failed",
@@ -107,6 +114,7 @@ def register(app: typer.Typer) -> None:
                     database.dispose()
                 data.update(registration.as_dict())
                 data["ods"] = landing.as_dict() if landing is not None else None
+                data["dwd"] = fact.as_dict() if fact is not None else None
         except FinanceCofferError as exc:
             emit_failure(options, exc)
         emit_success(options, data, meta=Meta(source="etl"))
