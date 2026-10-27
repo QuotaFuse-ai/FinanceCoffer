@@ -1,9 +1,8 @@
 # FinanceCoffer
 
-FinanceCoffer（金融数据金库）是面向 AI Agent 的大规模金融数仓与混合检索引擎。它消费 TickHub-CN / TickHub-US（原 QuotaFuse StockData）采集并校验后的标准事件，完成 ODS / DWD / DWS / 向量四层落库，并通过 MCP 与 CLI 向 AI 提供「可回溯、带出处、带质量标记」的结构化与语义检索能力。
+FinanceCoffer（金融数据金库）是面向 AI Agent 的大规模金融数仓与混合检索引擎。它消费 TickHub-CN / TickHub-US 采集并校验后的标准事件，完成 ODS / DWD / DWS / 向量四层落库，并通过 MCP 与 CLI 向 AI 提供「可回溯、带出处、带质量标记」的结构化与语义检索能力。
 
-> 状态：**S1 基线（v0.1）**。T-001 工程骨架已落地：可安装的 `financecoffer` 包、`fcoffer` 命令树、配置加载、错误码、结构化日志与统一返回信封；业务命令仍为占位实现，调用返回 `E_NOT_IMPLEMENTED`，由后续任务填充。
-> 需求来源：`新建 DOCX 文档.docx` 中的《QuotaFuse Vault 完整开发文档（v1.0）》，按客户要求全部更名为 FinanceCoffer。
+> 状态：**S1 基线（v0.1）**。工程骨架已落地：可安装的 `financecoffer` 包、`fcoffer` 命令树、配置加载、错误码、结构化日志与统一返回信封；业务命令仍为占位实现，调用返回 `E_NOT_IMPLEMENTED`，由后续任务填充。
 
 ## 1. 定位与边界
 
@@ -33,7 +32,7 @@ fcoffer --help           # 命令树与 docs/specs/cli.md 的 P0 一致
 python -m pytest         # 骨架单测
 ```
 
-当前所有业务命令都是占位符，例如 `fcoffer doctor` / `fcoffer etl consume` 会返回 `E_NOT_IMPLEMENTED` 信封并以退出码 1 结束，由后续任务实现（见 `docs/tasks/TASK-000-plan/plan.md`）。
+当前部分业务命令仍是占位符，例如 `fcoffer etl consume` 会返回 `E_NOT_IMPLEMENTED` 信封并以退出码 1 结束，由后续任务实现（命令清单与实现状态见 `docs/specs/cli.md`）。
 
 配置按 **内置默认值 → `.env` → 进程环境变量 → 显式参数** 的优先级加载，只读取 `FC_*` 变量，模板见 [`.env.example`](.env.example)。密钥字段使用 `SecretStr`，日志与 `fcoffer config show` 会脱敏连接串口令。
 
@@ -100,20 +99,20 @@ fcoffer query risk --symbol 600000
 
 ## 6. 命名
 
-从 QuotaFuse Vault 全量更名为 FinanceCoffer：
+项目统一使用 FinanceCoffer 命名体系：
 
-| 类别 | 旧 | 新 |
-| --- | --- | --- |
-| 产品名 | QuotaFuse Vault | FinanceCoffer |
-| PyPI | `quota-fuse-vault` | `financecoffer` |
-| Python 包 | `qf_vault` | `financecoffer` |
-| CLI | `qfv` | `fcoffer` |
-| MCP Server | `quota-fuse-vault` | `financecoffer` |
-| 环境变量 | `VAULT_*` | `FC_*` |
-| 数据库 | `qf_vault` | `financecoffer` |
-| 容器镜像 | `ghcr.io/quotafuse-ai/quota-fuse-vault` | `ghcr.io/quotafuse-ai/financecoffer` |
+| 类别 | 值 |
+| --- | --- |
+| 产品名 | FinanceCoffer（金融数据金库） |
+| PyPI | `financecoffer` |
+| Python 包 | `financecoffer` |
+| CLI | `fcoffer` |
+| MCP Server | `financecoffer` |
+| 环境变量 | `FC_*` |
+| 数据库 | `financecoffer` |
+| 容器镜像 | `ghcr.io/quotafuse-ai/financecoffer` |
 
-完整映射与理由见 [`docs/specs/naming.md`](docs/specs/naming.md) 与 [`docs/decisions/DEC-0001-rename-to-financecoffer.md`](docs/decisions/DEC-0001-rename-to-financecoffer.md)。
+完整清单与理由见 [`docs/specs/naming.md`](docs/specs/naming.md)。
 
 ## 7. 目录结构
 
@@ -122,16 +121,9 @@ FinanceCoffer/
 ├── README.md
 ├── docs/
 │   ├── specs/           # 产品规格、命名、CLI、包名、参考对比、需求追踪
-│   ├── decisions/       # 决策记录（只增不改）
-│   ├── tasks/           # 任务产出
-│   └── multica-handover/# 接手报告（只读）
+│   └── decisions/       # 决策记录（只增不改）
 ├── pyproject.toml        # 发行名 financecoffer，入口 fcoffer
 ├── .env.example          # FC_* 配置模板（无真实凭据）
-├── docs/
-│   ├── specs/           # 产品规格、命名、CLI、包名、参考对比、需求追踪
-│   ├── decisions/       # 决策记录（只增不改）
-│   ├── tasks/           # 任务产出（TASK-000 计划、TASK-001 骨架）
-│   └── multica-handover/# 接手报告（只读）
 ├── src/financecoffer/
 │   ├── cli/             # Typer 命令树（P0 占位命令）
 │   ├── core/            # 配置模型、错误码、日志、返回信封
@@ -166,8 +158,6 @@ FinanceCoffer/
 - [需求逐条追踪](docs/specs/requirements-traceability.md)
 - [事件契约](docs/specs/event-contract.md)
 - [TickHub 侧改造方案](docs/specs/tickhub-integration.md)
-- [实施计划](docs/tasks/TASK-000-plan/plan.md)
-- [T-001 工程骨架交付说明](docs/tasks/TASK-001/README.md)
 - [决策记录](docs/decisions/)
 - [DEC-0007 返回信封与错误码](docs/decisions/DEC-0007-envelope-and-error-codes.md)
 

@@ -212,7 +212,7 @@
 }
 ```
 
-规则：`pdf_url` 只存引用，Vault 不代下载；若上游已上传 MinIO，改传 `object_ref`。
+规则：`pdf_url` 只存引用，FinanceCoffer 不代下载；若上游已上传 MinIO，改传 `object_ref`。
 
 ### 3.7 `northbound`（北向资金，TickHub-CN 归档已有）
 
@@ -303,7 +303,7 @@
 
 ## 7. 待确认
 
-1. G-01：业务方已确认走 A（TickHub 侧发布、Vault 只消费），待 TickHub 侧排期与实现。
+1. G-01：业务方已确认走 A（TickHub 侧发布、FinanceCoffer 只消费），待 TickHub 侧排期与实现。
 2. G-02：`financial` / `kline` / `quote` / `risk` 事件样例需 TickHub 团队确认字段口径。
 3. G-10：已确认（DEC-0009）——CN 数据事件统一输出 `compliance_tier=C` 与 `commercial_use=false`，与 DEC-0006 的「个人研究级、仅内部使用」一致；`heartbeat` 不承载上游数据，维持只写 `provider`。
 4. G-11：大文本走 MinIO 的引用格式（`minio://bucket/key` vs presigned URL）。

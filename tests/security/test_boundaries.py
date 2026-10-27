@@ -1,4 +1,4 @@
-"""Regression tests for TASK-017: REST / query-layer security boundaries.
+"""Regression tests for REST / query-layer security boundaries.
 
 Covers S-01 (SQL injection), S-02 (unbounded vector scan), S-03 (REST bind
 address), S-06 (secret leakage), S-07 (large-query DoS) and S-10 (audit /

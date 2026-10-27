@@ -10,3 +10,6 @@ logs/
 .env
 *.docx
 .DS_Store
+
+# Local launcher overrides (machine-specific paths)
+*.local.cmd

@@ -22,7 +22,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from transformers import AutoModel, AutoTokenizer
 
-DEFAULT_MODEL_DIR = Path(r"[local-path]\ruanjian\embedding\models\bge-m3")
+DEFAULT_MODEL_DIR = Path(os.environ.get("FC_EMBEDDING_MODEL_DIR", "var/models/bge-m3"))
 DEFAULT_MODEL_NAME = "BAAI/bge-m3"
 DEFAULT_DIM = 1024
 MAX_BATCH = 32

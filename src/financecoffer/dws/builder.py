@@ -1,7 +1,7 @@
 """DWS wide-table builder.
 
 ``DwsService.build`` recomputes one ``dws.stock_agent_analysis_wide`` row per
-symbol from DWD facts, following ``docs/tasks/TASK-008/dws-metrics-spec.md``:
+symbol from DWD facts under these rules:
 
 * store don't compute: amounts move as :class:`~decimal.Decimal` and are written
   as fixed-point strings; nothing is annualized, reconciled or adjusted;

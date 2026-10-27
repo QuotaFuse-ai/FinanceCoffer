@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS event_outbox (
 | Stream | `fc:stockdata:events`，字段 `payload` |
 | 写入 | `XADD fc:stockdata:events MAXLEN ~ 100000 * payload <json>` |
 | 持久化 | Redis 必须开 AOF；仅 RDB 会丢最后一段事件 |
-| 鉴权 | 非回环部署时启用 `requirepass`/ACL，发布端与 Vault 用同一凭据 |
+| 鉴权 | 非回环部署时启用 `requirepass`/ACL，发布端与 FinanceCoffer 用同一凭据 |
 
 ## 4. TickHub-CN 改造
 
@@ -257,7 +257,7 @@ us_collector/
 
 取舍建议：
 
-- **内部研究、不对外分发、不提供付费报告** → 用 `false`。每条事件落 `source_info.compliance_tier` + `warnings`，Vault 查询端按级门禁（D 级不出现在对外输出），并保留“仅个人研究”标注。
+- **内部研究、不对外分发、不提供付费报告** → 用 `false`。每条事件落 `source_info.compliance_tier` + `warnings`，FinanceCoffer 查询端按级门禁（D 级不出现在对外输出），并保留“仅个人研究”标注。
 - **对外商业产品 / 为客户出具分析** → 必须用 `true`，并补 Polygon 订阅（或等价授权源）；接受覆盖缺口，财报用 SEC EDGAR/XBRL 兜底。
 
 **已定（2026-10-26，DEC-0006）：用 `false`。** 配置写死 `FC_COLLECT_COMMERCIAL_USE=false`，不允许运行时切换；每条事件写入 `source_info.commercial_use=false`。后续若转对外商业，必须重新采集，不能用 `false` 口径的历史数据对外输出。
@@ -271,10 +271,10 @@ us_collector/
 
 - 范围：CN 归档库中已有的 `announcement` / `research_report` / `risk_event` / `northbound_flow`。
 - 做法：`scripts/backfill_cn.py` 分页读取 SQLite → 复用 `build_event` → `XADD`；带 `source_info.backfill=true` 标记。
-- 不在 daemon 中运行；回填完成即停用；已存在的 `event_id` 由 Vault 幂等跳过，可重复执行。
+- 不在 daemon 中运行；回填完成即停用；已存在的 `event_id` 由 FinanceCoffer 幂等跳过，可重复执行。
 - US 无历史可回填（无持久化），从接入日开始累积。
 
-## 7. Vault 侧配套（不在本文件实现）
+## 7. FinanceCoffer 侧配套（不在本文件实现）
 
 - 消费组初始化：`XGROUP CREATE fc:stockdata:events fc-etl $ MKSTREAM`；重启用 `XREADGROUP` 续读；`XAUTOCLAIM` 接管宕机消费者的 pending。
 - `heartbeat` 落 `ops.source_heartbeat`，暴露 `fc_source_last_seen_seconds`；不落 ODS。
@@ -296,7 +296,7 @@ us_collector/
 | 风险 | 影响 | 对策 |
 | --- | --- | --- |
 | CN 爬虫限流/反爬 | 财报与 K 线任务失败 | 复用现有代理与退避；首期只覆盖自选池 |
-| Redis 未开 AOF | 重启丢事件 | 部署检查项 + `th-cn doctor` / Vault `doctor` 双向校验 |
+| Redis 未开 AOF | 重启丢事件 | 部署检查项 + `th-cn doctor` / FinanceCoffer `doctor` 双向校验 |
 | 双实例 | 重复调用、限流 | sidecar 单实例锁；CN 只允许一个 daemon |
 | 事件体积过大 | Stream 内存膨胀 | 单条 8 MB 上限；`raw_html` 超限截断并标 `truncated` |
 | 合规取值错误 | 数据不可商用或覆盖不足 | `commercial_use` 写死配置，查询端按 `compliance_tier` 二次门禁 |

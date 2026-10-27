@@ -2,8 +2,8 @@
 
 Facts are seeded through the DWD repositories (``insert_version`` /
 ``insert_once``), exactly the rows the T-006 write path would leave behind. The
-builder then runs for real, and each test asserts one block of
-``docs/tasks/TASK-008/dws-metrics-spec.md`` section 9.
+builder then runs for real, and each test asserts one block of the
+wide-table build rules.
 
 Every test uses its own ``81xxxx`` symbols so the shared scratch database stays
 isolated from the DWD integration suite (which uses ``900xxx``).

@@ -207,7 +207,7 @@ fcoffer dws rebuild [--as-of YYYY-MM-DD] [--years N]
 - 年度质量只落在 `metrics_json.quality`（`bad_years` / `suspicious_years` / `missing_years`），顶层不再设
   `quality_status` / `confidence` 列。
 - 金额为元、4 位小数的定长字符串；`roe` / `pb` 当前恒为 `null` 并给出原因；`pe` 使用 `--as-of` 时点的估值快照
-  （临时口径，见 `docs/tasks/TASK-008/README.md`）。
+  （临时口径）。
 - `risk_summary` 覆盖 `(as_of − 3 年, as_of]`；`latest_announcements` 最多 20 条，按 `ann_date DESC, id DESC`。
 - 合规开关关闭时 `compliance_tier` / `commercial_use` 保持 `NULL`；开启时同一 symbol 的 DWD 源行必须同档同商用标记，
   否则该 symbol 失败（不猜测、不取最严档）。

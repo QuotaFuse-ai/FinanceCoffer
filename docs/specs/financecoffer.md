@@ -1,12 +1,11 @@
 # FinanceCoffer 产品规格
 
-版本：v0.1（设计稿）
-来源：《QuotaFuse Vault 完整开发文档（v1.0）》，产品名统一更改为 FinanceCoffer。
+版本：v0.5（设计稿）
 变更规则：本文件为最新版本，每次修改必须在文末「变更记录」追加一行。
 
 ## 1. 产品定位
 
-FinanceCoffer 是面向 AI Agent 的大规模金融数仓与混合检索引擎，常驻后台独立服务。它承接 TickHub-CN / TickHub-US（原 QuotaFuse StockData）采集、清洗、勾稽校验后的全量数据，提供：
+FinanceCoffer 是面向 AI Agent 的大规模金融数仓与混合检索引擎，常驻后台独立服务。它承接 TickHub-CN / TickHub-US 采集、清洗、勾稽校验后的全量数据，提供：
 
 - 高可靠持久化（PostgreSQL，ODS/DWD/DWS 分层）
 - 冷热分离（近 3 年热数据在 PG，历史与大文本转存 MinIO）
@@ -133,7 +132,7 @@ CREATE INDEX idx_fin_snapshot_symbol_date
 - 数据源：直接复用上游 `clean_content`，不重复清洗。
 - 切片：512 token，重叠 50 token。
 - 模型：本地 `BAAI/bge-m3`（DEC-0005），维度 **1024**（`FC_EMBEDDING_DIM` 落库前必须与表定义一致）。
-- 调用方式：HTTP 调用本地 embedding 服务（OpenAI 兼容 `/v1/embeddings`，可用 TEI / Ollama / Xinference 承载），Vault 内不内嵌模型权重；返回向量做 L2 归一化后再落库。
+- 调用方式：HTTP 调用本地 embedding 服务（OpenAI 兼容 `/v1/embeddings`，可用 TEI / Ollama / Xinference 承载），FinanceCoffer 内不内嵌模型权重；返回向量做 L2 归一化后再落库。
 - 索引：HNSW + cosine。
 - 换模型或改维度必须新建表并全量重跑 `fcoffer vector reindex`，禁止原地 `ALTER` 混存两套向量。
 
@@ -235,7 +234,7 @@ CREATE INDEX idx_ann_chunk_embedding
 | `FC_COMPLIANCE_ENABLED` | `false` | 合规标记开关（DEC-0010）：关闭时不读写 `compliance_tier`/`commercial_use`，开启时写入必填、读取回填 `meta.compliance_tier` |
 | `FC_LOG_LEVEL` | `INFO` | 日志级别 |
 
-旧变量 `VAULT_*` 全部废弃，映射见 `docs/specs/naming.md`。
+完整变量清单见 `docs/specs/naming.md`。
 
 ## 9. 部署
 
@@ -270,3 +269,4 @@ CREATE INDEX idx_ann_chunk_embedding
 | 2026-10-26 | v0.2 | G-06 定案：embedding 改用本地 bge-m3 1024 维（DEC-0005），DDL、环境变量、CLI 同步更新 |
 | 2026-10-27 | v0.3 | G-11 改为运行时开关 `FC_COMPLIANCE_ENABLED`（默认关闭，DEC-0010）；§6.2 REST 接口进入实现范围 |
 | 2026-10-27 | v0.4 | T-017a：`cli.md` 新增错误码表（第 5 节），同步 §6.2 的交叉引用 |
+| 2026-10-27 | v0.5 | 清理历史产品名与内部环境信息，文档只保留 FinanceCoffer 命名 |
