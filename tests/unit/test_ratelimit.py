@@ -41,6 +41,12 @@ class FakeService:
     def search_announcements(self, symbol: str, text: str, **_: Any) -> QueryResult:
         return QueryResult(data={"symbol": symbol, "count": 0, "results": []}, source="vector")
 
+    def embedding_ready(self) -> bool:
+        return True
+
+    def business_metrics(self) -> None:
+        return None
+
 
 def _client(*, limiter: TokenBucket | None = None, enabled: bool = True) -> TestClient:
     config = Config(db_url=DSN, rate_limit_enabled=enabled)
