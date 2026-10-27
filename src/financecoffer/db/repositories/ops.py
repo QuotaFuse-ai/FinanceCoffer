@@ -49,6 +49,36 @@ class EventLogRepository(BaseRepository[EtlEventLog]):
             trace_id=trace_id,
         )
 
+    def find_by_identity(
+        self,
+        *,
+        provider: str,
+        data_type: str,
+        symbol: str | None,
+        biz_key: str,
+    ) -> EtlEventLog | None:
+        """Return the row owning this business identity, if any.
+
+        ``symbol IS NULL`` has to be written out: the unique constraint uses
+        ``NULLS NOT DISTINCT``, so two null symbols are the same identity.
+        """
+
+        symbol_filter = (
+            self.model.symbol.is_(None) if symbol is None else self.model.symbol == symbol
+        )
+        statement = select(self.model).where(
+            self.model.provider == provider,
+            self.model.data_type == data_type,
+            symbol_filter,
+            self.model.biz_key == biz_key,
+        )
+        return self._one_or_none(statement)
+
+    def record_duplicate_delivery(self, event_id: str) -> EtlEventLog | None:
+        """Count one redelivery of an already-registered event."""
+
+        return self._transition(event_id, attempts=self.model.attempts + 1)
+
     def begin(self, event_id: str) -> EtlEventLog | None:
         return self._transition(
             event_id,
