@@ -1,6 +1,6 @@
 # FinanceCoffer 产品规格
 
-版本：v0.8（设计稿）
+版本：v0.9（设计稿）
 变更规则：本文件为最新版本，每次修改必须在文末「变更记录」追加一行。
 
 ## 1. 产品定位
@@ -372,8 +372,9 @@ CREATE INDEX idx_ann_chunk_embedding
 | 2026-10-26 | v0.1 | 首版，依据 v1.0 文档更名并整理 |
 | 2026-10-26 | v0.2 | G-06 定案：embedding 改用本地 bge-m3 1024 维（DEC-0005），DDL、环境变量、CLI 同步更新 |
 | 2026-10-27 | v0.3 | G-11 改为运行时开关 `FC_COMPLIANCE_ENABLED`（默认关闭，DEC-0010）；§6.2 REST 接口进入实现范围 |
-| 2026-10-27 | v0.4 | T-017a：`cli.md` 新增错误码表（第 5 节），同步 §6.2 的交叉引用 |
+| 2026-10-27 | v0.4 | `cli.md` 新增错误码表（第 5 节），同步 §6.2 的交叉引用 |
 | 2026-10-27 | v0.5 | 清理历史产品名与内部环境信息，文档只保留 FinanceCoffer 命名 |
 | 2026-10-29 | v0.6 | §7 改为「注册即输出」（无数据输出 0 值基线）、明确 `/metrics` 仅 Prometheus 文本格式（`Accept` 不生效，JSON 走 CLI）、归档指标统一为 `fc_archive_job_total{status}`（DEC-0022，`fc_archive_failed_total` 废弃，§4.5 同步）、`fc_pg_pool_in_use` 标注不适用（查询层 psycopg 直连，无连接池）；补登 `fc_vector_chunks_total`、`fc_vector_embeddings_total`、`fc_archive_job_total` 的 `status` 值域 |
 | 2026-10-29 | v0.7 | 新增 §6.2.1：`/health` 的 `checks` 统一为 `{status, elapsed_ms?, ...}` 对象、`status` 闭集词表（`ok`/`degraded`/`unreachable`/`not_configured`，`not_installed` 废止）、降级判定表、`etl` 以 60 秒告警阈值为积压判定（消灭 `unknown`）、REST 与 CLI `fcoffer health` 的差异及原因、每次请求两连接的已知限制；依据：客户端可消费的形状必须唯一，且就绪判定与告警不得对同一积压给出相反结论 |
 | 2026-10-29 | v0.8 | §6.2.1 的 `minio` 探针由「尚未实现」改为已落地的 `HeadBucket` 单次探测（含 `not_configured` / `unreachable` 的判定条件），REST 与 CLI 检查项清单同步；`redis` 的「客户端未安装」分支按统一形状不再给 `elapsed_ms`，自有字段列补注。依据：可选依赖的就绪语义以代码可验证的行为为准，`elapsed_ms` 只表示真正发起过的探测耗时 |
+| 2026-10-29 | v0.9 | 变更记录 v0.4 行删除内部任务号，只留业务描述（公开仓库规则：`docs/` 不出现内部任务编号）；本文件现已无任务号残留，其余历史行的编号形态不在此单处理 |
