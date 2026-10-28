@@ -9,6 +9,7 @@ import redis
 from fastapi.testclient import TestClient
 
 from financecoffer.api import create_app
+from financecoffer.api.health import etl_check
 from financecoffer.api.ratelimit import TokenBucket
 from financecoffer.core.config import Config
 from financecoffer.core.errors import (
@@ -49,6 +50,7 @@ class FakeService:
         error: FinanceCofferError | None = None,
         compliance_enabled: bool = False,
         business: BusinessMetrics | None = None,
+        queue: tuple[int, float | None] | None = (0, 0.0),
     ) -> None:
         self.config = Config(db_url=DSN, compliance_enabled=compliance_enabled)
         self.healthy = healthy
@@ -56,6 +58,7 @@ class FakeService:
         self.result = result or QueryResult(data={"symbol": "600000"}, source="dws")
         self.error = error
         self.business = business
+        self.queue = queue
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
 
     def ping(self) -> bool:
@@ -66,6 +69,9 @@ class FakeService:
 
     def business_metrics(self) -> BusinessMetrics | None:
         return self.business
+
+    def etl_queue(self) -> tuple[int, float | None] | None:
+        return self.queue
 
     def _answer(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> QueryResult:
         self.calls.append((name, args, kwargs))
@@ -218,11 +224,84 @@ def test_health_stays_200_and_keeps_its_shape_when_redis_is_unreachable(
     payload = response.json()
     assert payload["ok"] is True
     checks = payload["data"]["checks"]
-    assert set(checks) == {"database", "embedding", "redis"}
+    assert set(checks) == {"database", "embedding", "redis", "etl"}
     assert checks["redis"]["status"] == "unreachable"
     assert isinstance(checks["redis"]["elapsed_ms"], float)
     # The aggregate status still turns on database and embedding only.
     assert payload["data"]["status"] == "ok"
+
+
+class _FakeCursor:
+    """Psycopg cursor stand-in: answers the ETL queue query, records the SQL."""
+
+    def __init__(self, row: tuple[Any, ...] | None) -> None:
+        self.row = row
+        self.statements: list[str] = []
+
+    def execute(self, sql: str, *args: Any) -> _FakeCursor:
+        self.statements.append(sql)
+        return self
+
+    def fetchone(self) -> tuple[Any, ...] | None:
+        return self.row
+
+    def __enter__(self) -> _FakeCursor:
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+
+class _FakeSession:
+    """Psycopg connection stand-in so the ETL probe never opens a socket."""
+
+    def __init__(self, row: tuple[Any, ...] | None) -> None:
+        self.cursor_obj = _FakeCursor(row)
+
+    def cursor(self) -> _FakeCursor:
+        return self.cursor_obj
+
+    def __enter__(self) -> _FakeSession:
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+
+def _etl_service(row: tuple[Any, ...] | None) -> QueryService:
+    """Real ``QueryService`` over a fake session (``timeout=0`` skips the
+    ``statement_timeout`` preamble, which the fake does not implement)."""
+
+    return QueryService(
+        config=Config(db_url=DSN),
+        timeout=0,
+        connector=lambda *args, **kwargs: _FakeSession(row),
+    )
+
+
+def test_etl_probe_reports_zero_when_nothing_is_queued() -> None:
+    check = etl_check(_etl_service((0, None)))
+
+    assert check == {"status": "unknown", "lag_seconds": 0.0, "pending": 0}
+
+
+def test_etl_probe_reports_the_oldest_pending_event() -> None:
+    check = etl_check(_etl_service((3, 42.5)))
+
+    assert check == {"status": "unknown", "lag_seconds": 42.5, "pending": 3}
+
+
+def test_health_reports_the_etl_queue_without_judging_it(
+    redis_server: Callable[..., _FakeRedis],
+) -> None:
+    redis_server()
+
+    payload = _client(FakeService(queue=(2, 7.25))).get("/health").json()
+
+    checks = payload["data"]["checks"]
+    assert checks["etl"] == {"status": "unknown", "lag_seconds": 7.25, "pending": 2}
+    # Like redis, the etl probe is reported for visibility only.
+    assert payload["data"]["status"] == "ok", checks
 
 
 def test_structured_returns_data_with_service_meta() -> None:

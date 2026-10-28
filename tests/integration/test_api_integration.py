@@ -499,6 +499,9 @@ def test_health_reports_each_component(client: TestClient) -> None:
     # Redis is reported for visibility and does not take part in the aggregate
     # status yet, so its value is asserted by shape only.
     assert set(checks["redis"]) == {"status", "elapsed_ms"}
+    # The etl probe shares its definition with fc_etl_consume_lag_seconds and,
+    # like redis, is reported for visibility only.
+    assert set(checks["etl"]) == {"status", "lag_seconds", "pending"}
 
 
 def test_health_degrades_without_crashing_when_embedding_is_down(

@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from financecoffer import __version__
-from financecoffer.api.health import redis_check
+from financecoffer.api.health import etl_check, redis_check
 from financecoffer.api.metrics import render_ops_metrics
 from financecoffer.api.ratelimit import TokenBucket
 from financecoffer.config.loader import load_config
@@ -360,9 +360,10 @@ def create_app(
         database = query_service.ping()
         embedding = query_service.embedding_ready()
         # Reported for visibility only: the aggregate status below still turns
-        # on database and embedding alone, so a Redis outage cannot make an
-        # otherwise serviceable process look unready.
+        # on database and embedding alone, so a Redis outage or an ETL backlog
+        # cannot make an otherwise serviceable process look unready.
         redis = redis_check(query_service.config)
+        etl = etl_check(query_service)
         healthy = database and embedding
         data = {
             "status": "ok" if healthy else "degraded",
@@ -371,6 +372,7 @@ def create_app(
                 "database": "ok" if database else "unreachable",
                 "embedding": "ok" if embedding else "unreachable",
                 "redis": redis,
+                "etl": etl,
             },
             "compliance_enabled": query_service.config.compliance_enabled,
         }

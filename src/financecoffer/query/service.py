@@ -179,6 +179,30 @@ def _year_number(record: Mapping[str, Any]) -> int | None:
     return int(year) if isinstance(year, str) and year.isdigit() else None
 
 
+_ETL_QUEUE_SQL = (
+    "SELECT count(*), EXTRACT(EPOCH FROM (now() - min(received_at))) "
+    "FROM ops.etl_event_log "
+    "WHERE status IN ('received', 'processing')"
+)
+
+
+def etl_queue_state(cur: Any) -> tuple[int, float | None]:
+    """Return ``(pending, lag_seconds)`` for the events still queued for ETL.
+
+    This is the single definition behind both ``fc_etl_consume_lag_seconds``
+    (``/metrics``) and the ``etl`` probe (``/health``), so the two surfaces can
+    never disagree about how far behind the consumer is. ``received_at`` -- not
+    ``event_time`` -- is the clock; see :class:`BusinessMetrics`.
+    """
+
+    cur.execute(_ETL_QUEUE_SQL)
+    row = cur.fetchone()
+    pending = int(row[0] or 0) if row is not None else 0
+    if pending <= 0:
+        return 0, 0.0
+    return pending, (float(row[1]) if row[1] is not None else None)
+
+
 @dataclass(frozen=True)
 class BusinessMetrics:
     """Counters sampled from ``ops.*`` for ``/metrics``.
@@ -313,25 +337,31 @@ class QueryService:
                 dirty_data = {str(row[0]): int(row[1]) for row in cur.fetchall()}
                 cur.execute("SELECT status, count(*) FROM ops.archive_job GROUP BY status")
                 archive_jobs = {str(row[0]): int(row[1]) for row in cur.fetchall()}
-                cur.execute(
-                    "SELECT count(*), "
-                    "EXTRACT(EPOCH FROM (now() - min(received_at))) "
-                    "FROM ops.etl_event_log "
-                    "WHERE status IN ('received', 'processing')"
-                )
-                pending = cur.fetchone()
+                _, consume_lag = etl_queue_state(cur)
         except Exception:  # noqa: BLE001 - a metrics scrape must never fail
             return None
 
-        lag: float | None = 0.0
-        if pending is not None and int(pending[0] or 0) > 0:
-            lag = float(pending[1]) if pending[1] is not None else None
         return BusinessMetrics(
             etl_events=etl_events,
             dirty_data=dirty_data,
             archive_jobs=archive_jobs,
-            consume_lag_seconds=lag,
+            consume_lag_seconds=consume_lag,
         )
+
+    def etl_queue(self) -> tuple[int, float | None] | None:
+        """Sample the ETL queue as ``(pending, lag_seconds)``.
+
+        Shares :func:`etl_queue_state` with :meth:`business_metrics`, so the
+        ``etl`` probe on ``/health`` and ``fc_etl_consume_lag_seconds`` on
+        ``/metrics`` report the same number. ``None`` when ``ops`` cannot be
+        read: a readiness probe must not take ``/health`` down with it.
+        """
+
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                return etl_queue_state(cur)
+        except Exception:  # noqa: BLE001 - readiness must never crash the probe
+            return None
 
     # -- structured ---------------------------------------------------------
 

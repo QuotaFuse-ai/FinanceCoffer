@@ -3,8 +3,9 @@
 Every probe here is bounded and never raises: a dependency that is down must
 not take the readiness endpoint down with it, because orchestration uses that
 endpoint to decide whether to route traffic to this process. Each probe
-reports its own ``status`` (and how long it took), so the aggregate ``status``
-rule can be revisited without touching the probe itself.
+reports its own ``status`` (and, for calls that block on a socket, how long it
+took), so the aggregate ``status`` rule can be revisited without touching the
+probe itself.
 """
 
 from __future__ import annotations
@@ -56,3 +57,31 @@ def redis_check(config: Config, *, timeout: float = REDIS_OP_TIMEOUT) -> dict[st
                     client.close()
     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
     return {"status": status, "elapsed_ms": elapsed_ms}
+
+
+def etl_check(service: Any) -> dict[str, Any]:
+    """Report the ETL queue depth and lag: ``{status, lag_seconds, pending}``.
+
+    The numbers come from :meth:`QueryService.etl_queue`, which shares
+    :func:`financecoffer.query.service.etl_queue_state` with
+    ``fc_etl_consume_lag_seconds`` on ``/metrics`` -- one definition of
+    consumption lag for both surfaces.
+
+    ``status`` is ``unknown`` on purpose: which lag counts as degraded is part
+    of the readiness table still being decided, so this probe reports facts and
+    leaves the verdict alone. Both numbers are ``None`` when the queue could not
+    be sampled, because that is not a measurement either.
+    """
+
+    try:
+        snapshot = service.etl_queue()
+    except Exception:  # noqa: BLE001 - a probe must never crash /health
+        snapshot = None
+    if snapshot is None:
+        return {"status": "unknown", "lag_seconds": None, "pending": None}
+    pending, lag = snapshot
+    return {
+        "status": "unknown",
+        "lag_seconds": None if lag is None else round(float(lag), 3),
+        "pending": int(pending),
+    }
