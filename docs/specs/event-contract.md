@@ -1,6 +1,6 @@
 # FinanceCoffer 事件契约（Event Contract v1）
 
-版本：v0.5（草案，待 TickHub 团队确认）
+版本：v0.6（草案，待 TickHub 侧确认）
 适用范围：TickHub-CN / TickHub-US → FinanceCoffer 的唯一数据入口。
 原则：事件即证据。FinanceCoffer 只做校验、落库、索引，不补算、不改写上游判定。
 
@@ -313,7 +313,7 @@
 ## 7. 待确认
 
 1. G-01：业务方已确认走 A（TickHub 侧发布、FinanceCoffer 只消费），待 TickHub 侧排期与实现。
-2. G-02：`financial` / `kline` / `quote` / `risk` 事件样例需 TickHub 团队确认字段口径。
+2. G-02：`financial` / `kline` / `quote` / `risk` 事件样例需 TickHub 侧确认字段口径。
 3. G-10：已确认（DEC-0009）——CN 数据事件统一输出 `compliance_tier=C` 与 `commercial_use=false`，与 DEC-0006 的「个人研究级、仅内部使用」一致；`heartbeat` 不承载上游数据，维持只写 `provider`。
 4. G-11：大文本走 MinIO 的引用格式（`minio://bucket/key` vs presigned URL）。
 5. G-13：TickHub-CN 爬虫只覆盖 `announcements / reports / risks / northbound` 四类，`kline` 与 `financial_report` 归档表无写入方；财报与 K 线需要新增采集任务或 sidecar（见 `tickhub-integration.md`）。
@@ -328,3 +328,4 @@
 | 2026-10-27 | v0.3 | G-10 收口：CN 数据事件补 `compliance_tier=C` 与 `commercial_use=false`（DEC-0009）；可选字段，不升 `schema_version` |
 | 2026-10-28 | v0.4 | 补 `source_info.hub` 与 ODS `source` 判定顺序（DEC-0017）；明确 ODS `symbol` 可空，市场级事件原样落 `null`；`heartbeat` 写明 upsert 语义、校验项与 backfill 排除 |
 | 2026-10-28 | v0.5 | `financial.structured_fields` 补可选 `statement`（报表名），版本链按报表切分；可选字段，不升 `schema_version`（DEC-0019） |
+| 2026-10-29 | v0.6 | 版本行与 §7 G-02 的外部协作方表述统一为「TickHub 侧」（DEC-0025，公开仓库规则：`docs/` 不出现团队称谓） |

@@ -1,8 +1,10 @@
 # TickHub 侧改造方案（CN 内嵌钩子 / US 外挂采集器）
 
-版本：v0.2（2026-10-27）
+版本：v0.3（2026-10-29）
 上游契约：`docs/specs/event-contract.md` v0.3
 边界：FinanceCoffer 只消费，不做调度、不抓取、不回查上游库。
+
+> v0.3 变更：§8 任务拆分表删除内部任务编号列（改用任务内容作行标识），「归属」列改为部署口径（`部署配置` / `两端`）；依据公开仓库规则，`docs/` 不出现内部任务编号与团队称谓（DEC-0025）。
 
 ## 1. 总体结构
 
@@ -283,13 +285,13 @@ us_collector/
 
 ## 8. 任务拆分
 
-| 编号 | 内容 | 归属 | 人日 |
-| --- | --- | --- | --- |
-| T-101 | CN 发布模块 + store 钩子 + outbox + 心跳 | TickHub-CN | 2 |
-| T-102 | CN `financials` / `kline` / `quote` 采集任务 | TickHub-CN | 4 |
-| T-103 | US sidecar（调度、工具调用、事件组装、outbox） | TickHub-US | 3 |
-| T-104 | 历史回填脚本 + 校验 | 运维 | 1 |
-| T-105 | 两端联调（Redis、心跳、断网补发） | 联合 | 1 |
+| 任务 | 归属 | 人日 |
+| --- | --- | --- |
+| CN 发布模块 + store 钩子 + outbox + 心跳 | TickHub-CN | 2 |
+| CN `financials` / `kline` / `quote` 采集任务 | TickHub-CN | 4 |
+| US sidecar（调度、工具调用、事件组装、outbox） | TickHub-US | 3 |
+| 历史回填脚本 + 校验 | 部署配置 | 1 |
+| 两端联调（Redis、心跳、断网补发） | 两端 | 1 |
 
 ## 9. 风险
 

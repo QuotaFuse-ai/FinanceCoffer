@@ -1,13 +1,14 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.7（设计稿）
+版本：v0.8（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
-v0.3 按 T-005 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
-v0.4 按 T-008 实装 `dws build` / `dws show` / `dws rebuild`，§3.9 字段表改为 DDL 口径（指标移入 `metrics_json`），补充确定性、部分失败与合规规则。
+v0.3 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
+v0.4 实装 `dws build` / `dws show` / `dws rebuild`，§3.9 字段表改为 DDL 口径（指标移入 `metrics_json`），补充确定性、部分失败与合规规则。
 v0.5 `fc_etl_consume_lag_seconds` 的基准从 `event_time` 改为 `received_at`（排队等待时长），避免历史补录被算成巨大延迟。
 v0.6 明确配置解析口径：所有命令按 **内置默认值 → 仓库 `.env` → 进程环境变量 → `--db-url`** 加载，`.env` 按当前工作目录查找、缺失时静默回退；`db migrate/status` 等经 `MigrationRunner` 的命令统一走该路径（此前会忽略本机 `.env` 并报 `FC_DB_URL is not configured`）。
 v0.7 错误码表新增 `E_METHOD_NOT_ALLOWED`（REST 405）；未命中路由与其它框架级 4xx 统一走标准信封，`404` 复用 `E_NOT_FOUND`。
+v0.8 变更记录删除内部任务编号；§3.6 的 `ingest event` 说明改为职能口径（公开仓库规则：`docs/` 不出现内部任务编号与团队称谓）。
 
 ## 1. 全局参数
 
@@ -149,7 +150,7 @@ fcoffer ingest webhook --host 127.0.0.1 --port 8101 [--token TOKEN]
 ```
 
 - `ingest backfill` 只用于一次性迁移/对账，不作为运行时取数通道；执行时在 ODS 标记 `source=backfill`。
-- `ingest event` 是上游事件格式的契约验证入口，测试团队用它做对照测试。
+- `ingest event` 是上游事件格式的契约验证入口，供对照测试使用。
   默认行为是「校验 → `ops.etl_event_log` 幂等登记 → 追加 ODS」，两步在**同一事务**内完成：
   分区缺失导致 ODS 写入失败时，事件日志登记一并回滚，事件可原样重投。
   `--validate-only` 只校验、不连库。
