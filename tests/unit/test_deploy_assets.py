@@ -139,7 +139,7 @@ def test_compose_has_no_plaintext_secrets() -> None:
     assert re.sub(r"\$\{[^}]*\}", "", userinfo) == ":"
 
 
-def test_env_example_uses_placeholders_and_config_names() -> None:
+def test_env_example_ships_defaults_but_no_credentials() -> None:
     entries: dict[str, str] = {}
     for raw in (DEPLOY / ".env.example").read_text(encoding="utf-8").splitlines():
         line = raw.strip()
@@ -148,11 +148,35 @@ def test_env_example_uses_placeholders_and_config_names() -> None:
         key, value = line.split("=", 1)
         entries[key.strip()] = value.strip()
 
-    assert all(value == "CHANGE_ME" for value in entries.values())
-
     fc_keys = {key for key in entries if key.startswith("FC_")}
     assert fc_keys == {f"FC_{field.upper()}" for field in Config.model_fields}
     assert {"POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"} <= set(entries)
+
+    # CHANGE_ME means "the operator must supply this": credentials plus the
+    # deployment identity (role, database name, DSN). Everything else ships a
+    # value Config already accepts.
+    placeholder_keys = {f"FC_{name.upper()}" for name in SECRET_FIELDS} | {
+        "FC_DB_URL",
+        "FC_REDIS_URL",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DB",
+    }
+    for key, value in entries.items():
+        if key in placeholder_keys:
+            assert value == "CHANGE_ME", f"{key} must stay a placeholder"
+        else:
+            assert value != "CHANGE_ME", f"{key} must ship a working default"
+
+    # Non-placeholder settings must already satisfy Config, so a template copy
+    # can never fail on an enum, boolean or integer again.
+    Config(
+        **{
+            key.lower()[3:]: value
+            for key, value in entries.items()
+            if key in fc_keys - placeholder_keys
+        }
+    )
 
     for secret in SECRET_FIELDS:
         assert f"FC_{secret.upper()}" in entries
