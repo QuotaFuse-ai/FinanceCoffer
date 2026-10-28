@@ -1,12 +1,13 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.6（设计稿）
+版本：v0.7（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
 v0.3 按 T-005 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
 v0.4 按 T-008 实装 `dws build` / `dws show` / `dws rebuild`，§3.9 字段表改为 DDL 口径（指标移入 `metrics_json`），补充确定性、部分失败与合规规则。
 v0.5 `fc_etl_consume_lag_seconds` 的基准从 `event_time` 改为 `received_at`（排队等待时长），避免历史补录被算成巨大延迟。
 v0.6 明确配置解析口径：所有命令按 **内置默认值 → 仓库 `.env` → 进程环境变量 → `--db-url`** 加载，`.env` 按当前工作目录查找、缺失时静默回退；`db migrate/status` 等经 `MigrationRunner` 的命令统一走该路径（此前会忽略本机 `.env` 并报 `FC_DB_URL is not configured`）。
+v0.7 错误码表新增 `E_METHOD_NOT_ALLOWED`（REST 405）；未命中路由与其它框架级 4xx 统一走标准信封，`404` 复用 `E_NOT_FOUND`。
 
 ## 1. 全局参数
 
@@ -326,7 +327,8 @@ fcoffer skill install --target claude|cursor|codex [--path DIR] [--force]
 | `E_PARTIAL_FAILURE` | 8 | 500 | 批量操作部分失败 |
 | `E_INTERRUPTED` | 130 | 500 | Ctrl-C 中断 |
 | `E_NOT_IMPLEMENTED` | 1 | 501 | 命令或接口尚未实现 |
-| `E_NOT_FOUND` | 1 | 404 | 目标不存在或无数据 |
+| `E_NOT_FOUND` | 1 | 404 | 目标不存在或无数据（含未命中路由） |
+| `E_METHOD_NOT_ALLOWED` | 1 | 405 | 路由存在但不支持该 HTTP 方法 |
 | `E_RATE_LIMITED` | 1 | 429 | 请求超过限流阈值，响应带 `Retry-After` |
 
 REST 限流默认开启：按客户端 IP 的进程内令牌桶，默认 120 次/分钟，仅作用于 `/v1/*`，`/health` 与 `/metrics` 不限流。`FC_RATE_LIMIT_ENABLED=false` 关闭；`FC_RATE_LIMIT_PER_MINUTE` 调整阈值（1–10000）。

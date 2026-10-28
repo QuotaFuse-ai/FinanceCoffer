@@ -15,6 +15,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from financecoffer import __version__
 from financecoffer.api.ratelimit import TokenBucket
@@ -22,10 +23,14 @@ from financecoffer.config.loader import load_config
 from financecoffer.core.config import Config
 from financecoffer.core.envelope import Envelope
 from financecoffer.core.errors import (
+    AuthError,
     ErrorCode,
     FinanceCofferError,
     InternalError,
     InvalidArgumentError,
+    MethodNotAllowedError,
+    NotFoundError,
+    NotImplementedYetError,
     RateLimitedError,
 )
 from financecoffer.core.logging import get_logger, log_query_audit
@@ -46,6 +51,7 @@ except ImportError:  # pragma: no cover - only while the vector layer is absent
 _HTTP_STATUS: dict[ErrorCode, int] = {
     ErrorCode.E_INVALID_ARGUMENT: 400,
     ErrorCode.E_NOT_FOUND: 404,
+    ErrorCode.E_METHOD_NOT_ALLOWED: 405,
     ErrorCode.E_AUTH: 401,
     ErrorCode.E_CONFIG: 503,
     ErrorCode.E_STORAGE: 500,
@@ -58,6 +64,49 @@ _HTTP_STATUS: dict[ErrorCode, int] = {
 }
 
 _RATE_LIMITED_PREFIX = "/v1/"
+
+#: Framework-raised HTTP errors (unmatched route, wrong method, ...) are rendered
+#: with the same envelope as domain errors. Statuses without a dedicated code use
+#: ``E_INVALID_ARGUMENT`` for 4xx and ``E_INTERNAL`` for 5xx rather than minting
+#: near-synonyms of codes that already exist.
+_HTTP_ERROR_CODES: dict[int, ErrorCode] = {
+    400: ErrorCode.E_INVALID_ARGUMENT,
+    401: ErrorCode.E_AUTH,
+    403: ErrorCode.E_AUTH,
+    404: ErrorCode.E_NOT_FOUND,
+    405: ErrorCode.E_METHOD_NOT_ALLOWED,
+    429: ErrorCode.E_RATE_LIMITED,
+    501: ErrorCode.E_NOT_IMPLEMENTED,
+}
+
+_HTTP_ERROR_CLASSES: dict[ErrorCode, type[FinanceCofferError]] = {
+    ErrorCode.E_INVALID_ARGUMENT: InvalidArgumentError,
+    ErrorCode.E_AUTH: AuthError,
+    ErrorCode.E_NOT_FOUND: NotFoundError,
+    ErrorCode.E_METHOD_NOT_ALLOWED: MethodNotAllowedError,
+    ErrorCode.E_RATE_LIMITED: RateLimitedError,
+    ErrorCode.E_NOT_IMPLEMENTED: NotImplementedYetError,
+    ErrorCode.E_INTERNAL: InternalError,
+}
+
+_HTTP_ERROR_MESSAGES: dict[ErrorCode, str] = {
+    ErrorCode.E_INVALID_ARGUMENT: "invalid request",
+    ErrorCode.E_AUTH: "not authorised",
+    ErrorCode.E_NOT_FOUND: "resource not found",
+    ErrorCode.E_METHOD_NOT_ALLOWED: "method not allowed",
+    ErrorCode.E_RATE_LIMITED: "rate limit exceeded",
+    ErrorCode.E_NOT_IMPLEMENTED: "not implemented",
+    ErrorCode.E_INTERNAL: "unexpected server error",
+}
+
+
+def _http_error_code(status_code: int) -> ErrorCode:
+    """Map a framework HTTP status onto one of the stable ``E_*`` codes."""
+
+    mapped = _HTTP_ERROR_CODES.get(status_code)
+    if mapped is not None:
+        return mapped
+    return ErrorCode.E_INVALID_ARGUMENT if 400 <= status_code < 500 else ErrorCode.E_INTERNAL
 
 _log = get_logger("api")
 
@@ -282,6 +331,26 @@ def create_app(
             request.method, path, response.status_code, time.perf_counter() - started
         )
         response.headers["X-Trace-Id"] = trace
+        return response
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        """Render framework 404/405 (and any other HTTP error) as an envelope.
+
+        Without this handler an unmatched path falls through to Starlette's
+        ``{"detail": ...}`` body, which breaks the envelope contract clients
+        rely on (``ok`` / ``error.code`` / ``meta.trace_id``).
+        """
+
+        code = _http_error_code(exc.status_code)
+        detail = exc.detail.strip() if isinstance(exc.detail, str) else ""
+        error = _HTTP_ERROR_CLASSES[code](detail or _HTTP_ERROR_MESSAGES[code])
+        response = JSONResponse(
+            status_code=exc.status_code,
+            content=Envelope.from_error(error, trace_id=_trace_id(request)).model_dump(mode="json"),
+        )
+        for name, value in (exc.headers or {}).items():
+            response.headers[name] = value
         return response
 
     @app.exception_handler(FinanceCofferError)

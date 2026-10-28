@@ -38,6 +38,7 @@ class ErrorCode(str, Enum):
     E_NOT_IMPLEMENTED = "E_NOT_IMPLEMENTED"
     E_INTERRUPTED = "E_INTERRUPTED"
     E_NOT_FOUND = "E_NOT_FOUND"
+    E_METHOD_NOT_ALLOWED = "E_METHOD_NOT_ALLOWED"
     E_RATE_LIMITED = "E_RATE_LIMITED"
 
 
@@ -52,6 +53,7 @@ _EXIT_CODES: Mapping[ErrorCode, ExitCode] = {
     ErrorCode.E_NOT_IMPLEMENTED: ExitCode.ERROR,
     ErrorCode.E_INTERRUPTED: ExitCode.INTERRUPTED,
     ErrorCode.E_NOT_FOUND: ExitCode.ERROR,
+    ErrorCode.E_METHOD_NOT_ALLOWED: ExitCode.ERROR,
     ErrorCode.E_RATE_LIMITED: ExitCode.ERROR,
 }
 
@@ -130,6 +132,10 @@ class InterruptedError_(FinanceCofferError):
 
 class NotFoundError(FinanceCofferError):
     code = ErrorCode.E_NOT_FOUND
+
+
+class MethodNotAllowedError(FinanceCofferError):
+    code = ErrorCode.E_METHOD_NOT_ALLOWED
 
 
 class RateLimitedError(FinanceCofferError):

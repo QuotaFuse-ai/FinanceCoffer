@@ -448,10 +448,32 @@ def test_rate_limit_returns_the_envelope_and_retry_after() -> None:
     assert client.get("/health").status_code == 200
 
 
-def test_unknown_route_is_a_404() -> None:
+def test_unmatched_route_returns_the_404_envelope() -> None:
     response = _client().get("/v1/nope/600000")
 
     assert response.status_code == 404
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["data"] is None
+    assert payload["error"]["code"] == "E_NOT_FOUND"
+    assert payload["error"]["message"]
+    # The trace id must be the one the request was instrumented with, so log and
+    # body line up; the middleware echoes it on the response header as well.
+    assert payload["meta"]["trace_id"]
+    assert response.headers["X-Trace-Id"] == payload["meta"]["trace_id"]
+
+
+def test_wrong_method_returns_the_405_envelope() -> None:
+    response = _client().post("/health")
+
+    assert response.status_code == 405
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["data"] is None
+    assert payload["error"]["code"] == "E_METHOD_NOT_ALLOWED"
+    assert payload["error"]["message"]
+    assert payload["meta"]["trace_id"]
+    assert response.headers["X-Trace-Id"] == payload["meta"]["trace_id"]
 
 
 def test_documented_routes_are_served() -> None:
