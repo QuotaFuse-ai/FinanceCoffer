@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from financecoffer.config import (
     ENV_PREFIX,
+    SECRET_FIELDS,
     Config,
     default_env_file,
     env_var_name,
@@ -121,6 +122,40 @@ def test_db_url_must_be_postgres_and_password_is_not_echoed() -> None:
 def test_invalid_log_level_is_rejected() -> None:
     with pytest.raises(ConfigError):
         load_config(env={"FC_LOG_LEVEL": "LOUD"})
+
+
+@pytest.mark.parametrize("variable", sorted(f"FC_{name.upper()}" for name in SECRET_FIELDS))
+def test_template_placeholder_secret_is_a_config_error(variable: str) -> None:
+    """The copy-me template placeholder must never be accepted as a credential."""
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env={variable: "CHANGE_ME"})
+
+    error = excinfo.value
+    assert error.code.value == "E_CONFIG"
+    assert error.details is not None
+    problem = error.details["errors"][0]
+    assert problem["field"] == variable[len("FC_") :].lower()
+    assert f"{variable} must not keep the CHANGE_ME placeholder" in problem["reason"]
+    # The rejected value is not carried in the envelope, only the variable name.
+    assert set(problem) == {"field", "reason"}
+
+
+def test_empty_secret_is_allowed_and_stays_unset() -> None:
+    """Empty means "not enabled", not "unfilled", so it must keep loading."""
+
+    config = load_config(
+        env={
+            "FC_MCP_TOKEN": "",
+            "FC_MINIO_ACCESS_KEY": "",
+            "FC_MINIO_SECRET_KEY": "",
+            "FC_EMBEDDING_API_KEY": "",
+        }
+    )
+
+    for name in SECRET_FIELDS:
+        assert getattr(config, name) is None
+        assert config.redacted_dict()[name] is None
 
 
 def test_secrets_are_masked_and_url_credentials_redacted() -> None:

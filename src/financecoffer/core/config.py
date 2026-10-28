@@ -5,13 +5,26 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationInfo,
+    field_validator,
+)
 
 from financecoffer.core.redaction import REDACTED, redact_text
 
 SECRET_FIELDS: frozenset[str] = frozenset(
     {"embedding_api_key", "minio_access_key", "minio_secret_key", "mcp_token"}
 )
+
+#: The literal the deployment template uses to mean "the operator has not filled
+#: this in yet". A credential that keeps it would be a publicly known secret, so
+#: it is refused on load instead of reaching a live deployment. Only this exact
+#: spelling is refused: look-alikes are plausible real secrets and stay accepted.
+PLACEHOLDER_SECRET = "CHANGE_ME"
 
 LOG_LEVELS: frozenset[str] = frozenset({"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"})
 
@@ -90,6 +103,33 @@ class Config(BaseModel):
         if not _REDIS_URL.match(value):
             raise ValueError("FC_REDIS_URL must use a redis:// or rediss:// URL")
         return value
+
+    @field_validator(
+        "embedding_api_key",
+        "minio_access_key",
+        "minio_secret_key",
+        "mcp_token",
+        mode="after",
+    )
+    @classmethod
+    def _reject_placeholder_secret(
+        cls, value: SecretStr | None, info: ValidationInfo
+    ) -> SecretStr | None:
+        """Refuse the template placeholder; an absent or empty secret is valid.
+
+        ``None`` and the empty string are legitimate states, not "unfilled": a
+        loopback-only deployment sets no MCP token and the ``local`` embedding
+        provider needs no API key. Only the literal placeholder is rejected, and
+        the message names the variable without echoing the value.
+        """
+
+        if value is None:
+            return None
+        if value.get_secret_value() != PLACEHOLDER_SECRET:
+            return value
+        raise ValueError(
+            f"FC_{info.field_name.upper()} must not keep the CHANGE_ME placeholder"
+        )
 
     @field_validator("embedding_url")
     @classmethod

@@ -37,6 +37,9 @@ postgres / redis / minio  (健康检查通过)
 约定：
 
 - 真实 `.env` 只留在本机，已被 `.gitignore` 忽略；不要提交、不要贴进日志。
+- `CHANGE_ME` 是占位符标记，不是一个可用的值：任何一项留着它，`fcoffer config show`
+  都会以 `E_CONFIG` 拒绝并点名该变量——凭据字段在配置层拦截，DSN 项由各自的 scheme 校验拦截。
+  照抄模板而不填的副本启动不了，这是刻意的。
 - Compose 文件中没有任何字面量密钥，全部通过 `.env` 插值；`compose.yaml` 里标了必填（`:?`）的项缺失会让 `docker compose` 直接报错，标了默认值（`:-`）的 ETL 调优项缺失时静默回落到默认值。
 - `fcoffer config show` 的脱敏行为不受部署脚本影响。
 
@@ -68,10 +71,11 @@ postgres / redis / minio  (健康检查通过)
 模板里却是 `CHANGE_ME`，两者含义完全不同：
 
 - **空值 = 不启用。** loopback-only 部署不设 MCP token，`local` provider 不需要 API key。
-- **`CHANGE_ME` = 还没填。** 配置层会把字面量 `CHANGE_ME` 当作一个可用的密钥收下，
-  等于把一个公开仓库里人人皆知的值部署成了真实凭据。
+- **`CHANGE_ME` = 还没填。** 配置层拒绝字面量 `CHANGE_ME`：`fcoffer config show` 直接以
+  `E_CONFIG` 报错并点名该变量，不会把一个公开仓库里人人皆知的值当作真实凭据启动。
 
-所以这两项**要么填真值，要么清空，不要留着 `CHANGE_ME`**。
+所以这两项**要么填真值，要么清空，不要留着 `CHANGE_ME`**。其余凭据项同理，
+留着占位符一样启动不了。
 
 填完先渲染一遍再启动，确认没有残留的占位符：
 
