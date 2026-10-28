@@ -158,8 +158,14 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
+      # A reachable Redis only proves the network is up. The consumer refreshes
+      # `fc:etl:live:<stream>` every loop iteration, so this reads that key:
+      # the worker is healthy only while its consume loop is actually running.
       test:
-        ["CMD", "python", "-c", "import os, redis; redis.Redis.from_url(os.environ['FC_REDIS_URL'], socket_timeout=3).ping()"]
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import os, redis, time; r = redis.Redis.from_url(os.environ['FC_REDIS_URL'], socket_timeout=3, decode_responses=True); v = r.get('fc:etl:live:' + os.environ['FC_EVENT_STREAM']); raise SystemExit(0 if v and time.time() - float(v) < 120 else 1)"
       interval: 30s
       timeout: 5s
       retries: 3

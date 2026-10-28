@@ -67,6 +67,7 @@ class FakeRedis:
         self.groups: dict[tuple[str, str], dict[str, Any]] = {}
         self.pending: dict[tuple[str, str], dict[str, str]] = {}
         self.hashes: dict[str, dict[str, str]] = {}
+        self.strings: dict[str, str] = {}
         self.claimable: list[tuple[str, dict[str, str]]] = []
         self.acked: list[str] = []
         self.deleted: list[str] = []
@@ -223,6 +224,14 @@ class FakeRedis:
 
     def hgetall(self, key: str) -> dict[str, str]:
         return dict(self.hashes.get(key, {}))
+
+    # -- strings -------------------------------------------------------
+    def set(self, key: str, value: Any, ex: int | None = None) -> bool:
+        self.strings[key] = str(value)
+        return True
+
+    def get(self, key: str) -> str | None:
+        return self.strings.get(key)
 
 
 class FakeDatabase:
@@ -1014,3 +1023,35 @@ def _stub_result() -> HeartbeatResult:
         items=42,
         run_id="run-20261027-0200",
     )
+
+
+# -- liveness ----------------------------------------------------------------
+
+
+def test_consume_loop_refreshes_the_liveness_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = build_harness(monkeypatch)
+    harness.publish()
+
+    harness.consumer.run(once=True)
+
+    key = consumer_module.liveness_key(harness.config.event_stream)
+    assert key == f"fc:etl:live:{harness.config.event_stream}"
+    assert harness.client.strings[key].isdigit()
+
+
+def test_liveness_write_failure_does_not_stop_consumption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = build_harness(monkeypatch)
+    harness.publish()
+
+    def boom(*args: Any, **kwargs: Any) -> bool:
+        raise RuntimeError("redis said no")
+
+    monkeypatch.setattr(harness.client, "set", boom)
+
+    report = harness.consumer.run(once=True)
+
+    assert report.written == 1

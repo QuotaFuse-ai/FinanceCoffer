@@ -63,7 +63,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d api worker
 
 - `FC_EMBEDDING_URL` 不指向 Compose 服务，必须是从容器内可达的地址。API/worker 已加入 `host.docker.internal` 映射，Docker Desktop 与 Linux（Docker 20.10+）都可访问宿主机上的 embedding 服务。
 - MinIO 官方镜像在部分网络不可达，`compose.yaml` 头部注释给出了替代方式；本地二进制部署见 `docs/decisions/DEC-0014-object-storage-minio-local-binary.md`。
-- worker 执行 `fcoffer etl consume`，常驻消费 Redis Stream；健康检查用 `FC_REDIS_URL` 做一次 `PING`，能连通即视为消费端存活。
+- worker 执行 `fcoffer etl consume`，常驻消费 Redis Stream。健康检查不是对 Redis 做 `PING`——那只能证明网络通；消费循环每轮会把 `fc:etl:live:<stream>` 写到 Redis 并带 30 秒 TTL，探针读这个键并校验时间戳新鲜度。**循环卡住、线程崩溃或被 SIGSTOP 时，容器会在一个 TTL 后转 `unhealthy`**，而不是挂着绿灯装死。暂停（`etl pause`）时循环仍会刷新该键，暂停不会被误判为故障。
 
 ## 容器化实跑记录
 
@@ -83,6 +83,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d api worker
 | 投递 `event_id` 不合法的事件 | 进入 DLQ，日志给出 `event_id` 校验原因 |
 | `/v1/structured/<symbol>`（库中无宽表行） | 404 `E_NOT_FOUND`，符合预期 |
 | `/v1/risk/<symbol>` | 200 |
+| worker 存活探针 | 正常时 `healthy`；冻结消费进程后约两分钟转 `unhealthy`（存活键过期 + 连续 3 次探测失败），恢复后自动回到 `healthy` 并继续消费 |
 
 验证时用了两处替代，均不影响编排本身的正确性，但记录在案：
 

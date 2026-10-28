@@ -78,6 +78,18 @@ def test_healthchecks_cover_the_documented_endpoints() -> None:
     assert services["migrate"]["healthcheck"]["disable"] is True
 
 
+def test_worker_healthcheck_reads_the_consumer_liveness_key() -> None:
+    """A reachable Redis is not a running consumer: the probe reads the key the
+    consume loop refreshes, not ``PING``."""
+
+    worker = load_compose()["services"]["worker"]["healthcheck"]["test"]
+    command = " ".join(worker)
+
+    assert "fc:etl:live:" in command
+    assert "FC_EVENT_STREAM" in command
+    assert ".ping()" not in command
+
+
 def test_startup_order() -> None:
     services = load_compose()["services"]
 

@@ -14,7 +14,10 @@ Guarantees the operator depends on:
   finished and acknowledged, the next read is never started;
 * **bounded retry** -- transient failures retry with exponential backoff up to
   ``etl_max_attempts``, then the entry is dead-lettered and acknowledged;
-  deterministic failures go to the DLQ immediately.
+  deterministic failures go to the DLQ immediately;
+* **observable liveness** -- every loop iteration refreshes a short-lived Redis
+  key. A reachable Redis says nothing about a consumer whose loop has stalled,
+  so the container healthcheck reads that key instead of pinging Redis.
 
 The consumer does no calculation: it validates the contract, lands the event
 and writes the DWD fact. Quality fields pass through untouched.
@@ -60,6 +63,22 @@ from financecoffer.etl.processor import (
 _log = logging.getLogger(__name__)
 
 Entry = tuple[str, dict[str, Any]]
+
+#: Liveness key refreshed by the consume loop and read by the container
+#: healthcheck. It expires on its own, so a worker that stops refreshing
+#: (crashed thread, stalled loop, hard-killed process) goes red within one TTL
+#: instead of hiding behind a healthy Redis.
+LIVENESS_KEY_PREFIX = "fc:etl:live"
+
+#: Floor for the key's TTL. The effective TTL also covers three blocked reads,
+#: so a long ``etl_block_ms`` cannot expire the key between two iterations.
+LIVENESS_TTL_SECONDS = 30
+
+
+def liveness_key(stream: str) -> str:
+    """Key holding the epoch seconds of the last loop iteration."""
+
+    return f"{LIVENESS_KEY_PREFIX}:{stream}"
 
 
 @dataclass(frozen=True)
@@ -184,15 +203,20 @@ class Consumer:
         )
         started = datetime.now(UTC)
         group_state = self.ensure_group()
+        liveness_ttl = max(LIVENESS_TTL_SECONDS, int(block / 1000) * 3)
 
         # Restart recovery: our own pending entries are already claimed to this
         # consumer, so drain them before reading anything new.
         self._counts["recovered"] = self._drain_own_pending(batch)
+        self._touch_liveness(liveness_ttl)
 
         while not self._stop.is_set():
             if self._control_paused():
                 self._paused = True
                 self._counts["paused"] += 1
+                # A paused worker is still a live worker: keep the liveness key
+                # fresh so pausing does not look like a stalled loop.
+                self._touch_liveness(liveness_ttl)
                 if once:
                     break
                 self._idle_sleep(block)
@@ -207,12 +231,14 @@ class Consumer:
             if not entries:
                 if once:
                     break
+                self._touch_liveness(liveness_ttl)
                 continue
 
             self._counts["batches"] += 1
             self._handle_batch(entries)
             if once:
                 break
+            self._touch_liveness(liveness_ttl)
 
         finished = datetime.now(UTC)
         pending_after = self._pending_total()
@@ -432,6 +458,16 @@ class Consumer:
 
     def _idle_sleep(self, block: int) -> None:
         self._stop.wait(block / 1000 if block > 0 else 1.0)
+
+    def _touch_liveness(self, ttl_seconds: int) -> None:
+        """Refresh the liveness key; bookkeeping never fails a consume run."""
+
+        try:
+            self._client.set(
+                liveness_key(self.stream), str(int(time.time())), ex=ttl_seconds
+            )
+        except Exception as exc:  # noqa: BLE001 - health reporting is best effort
+            _log.debug("could not refresh the liveness key: %s", exc)
 
     def _observe_lag(self, entry_id: str) -> None:
         try:
