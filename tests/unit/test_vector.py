@@ -503,6 +503,7 @@ class _FakeService:
         return type(self).report
 
     def search(self, symbol: str | None, text: str, **kwargs: Any) -> QueryResult:
+        self.options = kwargs
         if not symbol:
             raise InvalidArgumentError(
                 "vector search requires --symbol",
@@ -577,13 +578,25 @@ def test_search_requires_a_query(fake_service: type[_FakeService]) -> None:
     assert payload["error"]["code"] == "E_INVALID_ARGUMENT"
 
 
-def test_search_caps_top_k_at_fifty(fake_service: type[_FakeService]) -> None:
-    result = runner.invoke(
-        app, ["vector", "search", "q", "--symbol", "600000", "--top-k", "51"]
-    )
+@pytest.mark.parametrize("value", ["0", "51", "abc"])
+def test_search_rejects_an_invalid_top_k_with_the_standard_envelope(
+    fake_service: type[_FakeService], value: str
+) -> None:
+    result = runner.invoke(app, ["vector", "search", "q", "--symbol", "600000", "--top-k", value])
 
     assert result.exit_code == 2
-    assert "51" in result.stderr or "--top-k" in result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "E_INVALID_ARGUMENT"
+    assert payload["error"]["details"]["field"] == "top_k"
+    assert payload["meta"]["trace_id"]
+
+
+def test_search_passes_a_valid_top_k_through(fake_service: type[_FakeService]) -> None:
+    result = runner.invoke(app, ["vector", "search", "q", "--symbol", "600000", "--top-k", "3"])
+
+    assert result.exit_code == 0, result.stdout
+    assert fake_service.instances[0].options["top_k"] == 3
 
 
 def test_index_status_returns_an_envelope(fake_service: type[_FakeService]) -> None:

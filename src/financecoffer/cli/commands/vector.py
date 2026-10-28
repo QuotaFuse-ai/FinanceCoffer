@@ -85,6 +85,30 @@ def _run(
         service.close()
 
 
+def _parse_top_k(value: str) -> int:
+    """Parse ``--top-k`` into ``1..MAX_TOP_K`` or raise ``E_INVALID_ARGUMENT``.
+
+    ``--top-k`` is declared as ``str`` so a non-numeric value such as ``abc``
+    reaches the command instead of stopping at Typer's type conversion, which
+    would exit without a JSON envelope. Bad values therefore all leave through
+    the same ``InvalidArgumentError`` exit as every other invalid option.
+    """
+
+    try:
+        parsed = int(value.strip())
+    except (AttributeError, ValueError) as exc:
+        raise InvalidArgumentError(
+            f"top_k must be an integer between 1 and {MAX_TOP_K}",
+            details={"field": "top_k", "value": value},
+        ) from exc
+    if parsed < 1 or parsed > MAX_TOP_K:
+        raise InvalidArgumentError(
+            f"top_k must be between 1 and {MAX_TOP_K}",
+            details={"field": "top_k", "value": parsed},
+        )
+    return parsed
+
+
 def _selection(options: GlobalOptions, *, symbol: str | None, all_symbols: bool) -> str | None:
     if symbol and all_symbols:
         emit_failure(
@@ -205,7 +229,7 @@ def register(app: typer.Typer) -> None:
         year_range: str | None = typer.Option(
             None, "--year-range", help="Inclusive window as YYYY-YYYY (max 10 years)."
         ),
-        top_k: int = typer.Option(10, "--top-k", min=1, max=MAX_TOP_K, help="Maximum hits."),
+        top_k: str = typer.Option("10", "--top-k", help=f"Maximum hits (1-{MAX_TOP_K})."),
     ) -> None:
         options = from_context(ctx)
         if query and query_option:
@@ -222,13 +246,17 @@ def register(app: typer.Typer) -> None:
                 options,
                 InvalidArgumentError("a query is required", details={"field": "query"}),
             )
+        try:
+            hits = _parse_top_k(top_k)
+        except InvalidArgumentError as exc:
+            emit_failure(options, exc)
         result = _run(
             options,
             lambda service: service.search(
                 symbol,
                 text,
                 year_range=year_range,
-                top_k=top_k,
+                top_k=hits,
             ),
         )
         emit_success(options, result.data, meta=result.meta(options.trace_id))
