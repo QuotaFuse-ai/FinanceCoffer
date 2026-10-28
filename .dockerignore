@@ -1,0 +1,26 @@
+# Keep the build context to what the image actually needs.
+# The Dockerfile copies only pyproject.toml, README.md and src/, so everything
+# else is excluded here: secrets (.env), VCS data, caches and local state must
+# never reach the builder.
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.gitattributes
+.github
+.venv
+.mypy_cache
+.pytest_cache
+.ruff_cache
+docs
+tests
+skills
+scripts
+config
+deploy
+var
+logs
+*.docx
+*.local.cmd
+*.local.sh

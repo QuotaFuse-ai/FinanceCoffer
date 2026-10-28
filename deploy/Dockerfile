@@ -1,4 +1,6 @@
-# syntax=docker/dockerfile:1
+# No `# syntax=docker/dockerfile:1` directive on purpose: this file uses no
+# BuildKit-only syntax, and the directive makes every build pull an extra
+# frontend image from the registry -- which stalls on restricted networks.
 
 # Build stage: resolve and install the application into an isolated virtualenv.
 FROM python:3.12-slim AS builder

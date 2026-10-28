@@ -63,7 +63,33 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d api worker
 
 - `FC_EMBEDDING_URL` 不指向 Compose 服务，必须是从容器内可达的地址。API/worker 已加入 `host.docker.internal` 映射，Docker Desktop 与 Linux（Docker 20.10+）都可访问宿主机上的 embedding 服务。
 - MinIO 官方镜像在部分网络不可达，`compose.yaml` 头部注释给出了替代方式；本地二进制部署见 `docs/decisions/DEC-0014-object-storage-minio-local-binary.md`。
-- worker 执行 `fcoffer etl consume`；ETL 消费端尚未实现前，容器会退出，这是预期行为，待消费端上线后随编排一起拉起。
+- worker 执行 `fcoffer etl consume`，常驻消费 Redis Stream；健康检查用 `FC_REDIS_URL` 做一次 `PING`，能连通即视为消费端存活。
+
+## 容器化实跑记录
+
+本编排已在 Docker（Linux 内核，`docker compose` v2）上完整跑通过一轮，用空数据库从零验证：
+
+| 验证点 | 结果 |
+| --- | --- |
+| `build` 构建应用镜像 | 成功（builder 内装 `.[api,db,etl,vector,s3,mcp]`，runtime 为非 root 用户） |
+| `migrate` 在空库执行迁移 | 退出码 0，迁移一路到 head，`db status` 显示 `pending 0` |
+| `postgres` / `redis` / `api` / `worker` 健康 | 四个容器均达到 `healthy` |
+| `GET /health` | 200，`database: ok`；未接入 embedding 服务时为 `embedding: unreachable` |
+| `GET /metrics` | 导出 `fc_api_requests_total{method,path,status}` |
+| `db partitions create --month <YYYY-MM>` | 建出当月 ODS 分区 |
+| `ingest event`（CLI 同步落库） | ODS 与 DWD 同时写入，`source` 由 `source_info.hub` 推导 |
+| 向 Stream 投递事件 → worker 消费 | `ops.etl_event_log` 记为 `done`，ODS 与 DWD 各新增一行 |
+| 重复投递同一事件 | 判为 `duplicate` 跳过，不产生第二行 |
+| 投递 `event_id` 不合法的事件 | 进入 DLQ，日志给出 `event_id` 校验原因 |
+| `/v1/structured/<symbol>`（库中无宽表行） | 404 `E_NOT_FOUND`，符合预期 |
+| `/v1/risk/<symbol>` | 200 |
+
+验证时用了两处替代，均不影响编排本身的正确性，但记录在案：
+
+- `minio/minio` 镜像在该网络下无法拉取（各镜像源 403 / not found），该轮验证把 `api`、`worker` 对 `minio` 的依赖去掉，只跑 postgres / redis / migrate / api / worker。**对象存储在容器内的行为未验证**，本地二进制方式见 `docs/decisions/DEC-0014-object-storage-minio-local-binary.md`。
+- `pgvector/pgvector:pg16` 拉取过慢，改用本机已有的 `pg17` 镜像。迁移与向量列在 pg17 上行为一致，但正式部署仍以 `compose.yaml` 里固定的 `pg16` 为准。
+
+尚未在容器内验证的两项：MinIO 读写、embedding 调用（宿主机 embedding 服务未在容器网络内应答，`/health` 因此显示 `embedding: unreachable`）。
 
 ## 升级与回滚
 
@@ -135,6 +161,7 @@ Prometheus 需要与 API 在同一编排网络内，或把 target 改成实际�
 
 | 现象 | 排查 |
 | --- | --- |
+| 构建阶段报 `Temporary failure in name resolution` 或拉依赖卡住 | 构建容器没有可用 DNS：用 `docker build --network=host -f deploy/Dockerfile .`，或给 builder 配置可解析 PyPI 的 DNS。 |
 | 端口被占用 | `docker compose ps` 或 `netstat -ano` / `ss -ltnp` 找到占用者；也可以改用 `API_PORT`（本地脚本）或调整 Compose 主机侧端口，主机侧继续绑定 `127.0.0.1`。 |
 | 迁移失败 | 看 `migrate` 日志、`ops.schema_version` 记录和 `FC_DB_URL` 凭据；确认 PostgreSQL 健康、迁移目录完整且版本连续。 |
 | MinIO 不可达 | 检查 `minio` 健康检查 `/minio/health/live`、`FC_MINIO_ACCESS_KEY`/`FC_MINIO_SECRET_KEY`、bucket 是否存在，以及容器内 `FC_MINIO_ENDPOINT` 是否为 `minio:9000`。 |
