@@ -493,7 +493,12 @@ def test_health_reports_each_component(client: TestClient) -> None:
     body = response.json()
     assert body["ok"] is True
     assert body["data"]["status"] == "ok"
-    assert body["data"]["checks"] == {"database": "ok", "embedding": "ok"}
+    checks = body["data"]["checks"]
+    assert checks["database"] == "ok"
+    assert checks["embedding"] == "ok"
+    # Redis is reported for visibility and does not take part in the aggregate
+    # status yet, so its value is asserted by shape only.
+    assert set(checks["redis"]) == {"status", "elapsed_ms"}
 
 
 def test_health_degrades_without_crashing_when_embedding_is_down(

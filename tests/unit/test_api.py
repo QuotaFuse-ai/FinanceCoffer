@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
+import redis
 from fastapi.testclient import TestClient
 
 from financecoffer.api import create_app
@@ -104,7 +106,43 @@ def _strict_client() -> TestClient:
     return TestClient(create_app(config=config, service=service))
 
 
-def test_health_ok_reports_envelope_and_switch_state() -> None:
+class _FakeRedis:
+    """Redis client stand-in so the health tests never open a socket."""
+
+    def __init__(self, *, error: BaseException | None = None) -> None:
+        self.error = error
+        self.closed = False
+
+    def ping(self) -> bool:
+        if self.error is not None:
+            raise self.error
+        return True
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def redis_server(monkeypatch: pytest.MonkeyPatch) -> Callable[..., _FakeRedis]:
+    """Replace ``Redis.from_url``; call the fixture to choose the fake's answer."""
+
+    state: dict[str, _FakeRedis] = {"client": _FakeRedis()}
+
+    def build(*args: Any, **kwargs: Any) -> _FakeRedis:
+        return state["client"]
+
+    def use(error: BaseException | None = None) -> _FakeRedis:
+        state["client"] = _FakeRedis(error=error)
+        return state["client"]
+
+    monkeypatch.setattr(redis.Redis, "from_url", build)
+    return use
+
+
+def test_health_ok_reports_envelope_and_switch_state(
+    redis_server: Callable[..., _FakeRedis],
+) -> None:
+    redis_server()
     client = _client(FakeService(compliance_enabled=True), compliance_enabled=True)
 
     response = client.get("/health")
@@ -113,24 +151,34 @@ def test_health_ok_reports_envelope_and_switch_state() -> None:
     payload = response.json()
     assert payload["ok"] is True
     assert payload["data"]["status"] == "ok"
-    assert payload["data"]["checks"] == {"database": "ok", "embedding": "ok"}
+    checks = payload["data"]["checks"]
+    assert checks["database"] == "ok"
+    assert checks["embedding"] == "ok"
+    assert checks["redis"]["status"] == "ok"
     assert payload["data"]["compliance_enabled"] is True
     assert payload["data"]["version"]
     assert payload["meta"]["trace_id"]
 
 
-def test_health_degraded_when_database_is_unreachable() -> None:
+def test_health_degraded_when_database_is_unreachable(
+    redis_server: Callable[..., _FakeRedis],
+) -> None:
+    redis_server()
     client = _client(FakeService(healthy=False))
 
     payload = client.get("/health").json()
 
     assert payload["ok"] is True
     assert payload["data"]["status"] == "degraded"
-    assert payload["data"]["checks"] == {"database": "unreachable", "embedding": "ok"}
+    assert payload["data"]["checks"]["database"] == "unreachable"
+    assert payload["data"]["checks"]["embedding"] == "ok"
     assert payload["data"]["compliance_enabled"] is False
 
 
-def test_health_degraded_when_embedding_is_unreachable() -> None:
+def test_health_degraded_when_embedding_is_unreachable(
+    redis_server: Callable[..., _FakeRedis],
+) -> None:
+    redis_server()
     client = _client(FakeService(embedding_ok=False))
 
     response = client.get("/health")
@@ -139,7 +187,42 @@ def test_health_degraded_when_embedding_is_unreachable() -> None:
     payload = response.json()
     assert payload["ok"] is True
     assert payload["data"]["status"] == "degraded"
-    assert payload["data"]["checks"] == {"database": "ok", "embedding": "unreachable"}
+    assert payload["data"]["checks"]["database"] == "ok"
+    assert payload["data"]["checks"]["embedding"] == "unreachable"
+
+
+def test_health_reports_redis_as_ok_with_its_own_timing(
+    redis_server: Callable[..., _FakeRedis],
+) -> None:
+    fake = redis_server()
+
+    response = _client(FakeService()).get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data"]["checks"]["redis"]["status"] == "ok"
+    assert isinstance(payload["data"]["checks"]["redis"]["elapsed_ms"], float)
+    assert payload["data"]["checks"]["redis"]["elapsed_ms"] >= 0
+    assert payload["data"]["status"] == "ok"
+    assert fake.closed is True
+
+
+def test_health_stays_200_and_keeps_its_shape_when_redis_is_unreachable(
+    redis_server: Callable[..., _FakeRedis],
+) -> None:
+    redis_server(redis.exceptions.ConnectionError("connection refused"))
+
+    response = _client(FakeService()).get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    checks = payload["data"]["checks"]
+    assert set(checks) == {"database", "embedding", "redis"}
+    assert checks["redis"]["status"] == "unreachable"
+    assert isinstance(checks["redis"]["elapsed_ms"], float)
+    # The aggregate status still turns on database and embedding only.
+    assert payload["data"]["status"] == "ok"
 
 
 def test_structured_returns_data_with_service_meta() -> None:
