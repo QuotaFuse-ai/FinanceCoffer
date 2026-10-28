@@ -11,6 +11,8 @@ from financecoffer.cli.commands import (
     ods,
     query,
     serve,
+    skill,
+    tool,
     vector,
     warehouse,
 )
@@ -28,6 +30,8 @@ MODULES = (
     vector,
     query,
     monitor,
+    tool,
+    skill,
 )
 
 __all__ = ["MODULES"]

@@ -1,8 +1,8 @@
 """Register placeholder commands for the P0 command tree.
 
-Every command listed as P0 in ``docs/specs/cli.md`` exists after T-001 but
-returns a stable ``E_NOT_IMPLEMENTED`` envelope. Unknown options are accepted
-and ignored so the command line from the spec can be exercised today.
+Commands without an implementation yet still exist and return a stable
+``E_NOT_IMPLEMENTED`` envelope. Unknown options are accepted and ignored so the
+command line from the spec can be exercised today.
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ def placeholder(path: str, summary: str) -> Callable[[typer.Context], None]:
     def _callback(ctx: typer.Context) -> None:
         options: GlobalOptions = ctx.obj if ctx.obj is not None else GlobalOptions()
         error = NotImplementedYetError(
-            f"fcoffer {path} is not implemented yet (T-001 skeleton)",
-            details={"command": path, "task": "T-013"},
+            f"fcoffer {path} is not implemented yet",
+            details={"command": path},
         )
         emit_envelope(Envelope.from_error(error, trace_id=options.trace_id), quiet=options.quiet)
         raise typer.Exit(code=error.exit_code)
@@ -45,7 +45,7 @@ def add_placeholder(
 
     app.command(
         name=name,
-        help=f"{summary} (placeholder; implemented in a later task)",
+        help=summary,
         context_settings=_PLACEHOLDER_CONTEXT,
     )(placeholder(path, summary))
 
