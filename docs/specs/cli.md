@@ -294,7 +294,10 @@ fcoffer health [--check db,minio,redis,etl] [--output json]
 | `fc_missing_chunk_total` | Counter | > 0 |
 | `fc_vector_search_seconds` | Histogram | P95 超阈值 |
 | `fc_archive_job_total{status}` | Counter | failed 增长 |
-| `fc_db_pool_in_use` | Gauge | 接近上限 |
+
+`/metrics` 只提供 Prometheus 文本格式，每个家族注册即输出（无数据为 0）；`--format json` 由 CLI 在客户端解析文本后输出，见 `financecoffer.md` §7 与 DEC-0022。
+
+连接池水位指标 `fc_pg_pool_in_use` **不适用**：查询层用 psycopg 直连、无连接池可采样，本产品不暴露该家族（原因见 `financecoffer.md` §7）。
 
 上游指标 `qf_stockdata_source_error_total`、`qf_stockdata_proxy_active_count` 由 TickHub 暴露；FinanceCoffer 不重复实现，只做抓取/告警联动（待确认部署方式）。
 

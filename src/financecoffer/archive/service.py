@@ -214,7 +214,6 @@ class ArchiveService:
             "skipped_existing": sum(item.skipped for item in stats),
             "bytes": sum(item.bytes for item in stats),
             "failed": failed,
-            "fc_archive_failed_total": failed,
             "tables": [item.payload(dry_run=dry_run) for item in stats],
             "failures": failures,
         }
@@ -742,6 +741,5 @@ class ArchiveService:
             "sampled": len(chosen),
             "passed": passed,
             "failed": failed,
-            "fc_archive_failed_total": failed,
             "failures": failures,
         }

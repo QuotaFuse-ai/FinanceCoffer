@@ -1,6 +1,6 @@
 # FinanceCoffer 产品规格
 
-版本：v0.5（设计稿）
+版本：v0.6（设计稿）
 变更规则：本文件为最新版本，每次修改必须在文末「变更记录」追加一行。
 
 ## 1. 产品定位
@@ -161,7 +161,7 @@ CREATE INDEX idx_ann_chunk_embedding
 | 冷 | 3 年以上 | 大文本 / PDF 上传 MinIO；成功后 PG 大字段置 `NULL`，`is_cold = true`，写 `minio_url` |
 | 大文本 | 单条 > 8KB | 无论年份，一律转存 MinIO |
 
-归档任务幂等：先上传再置空，失败保持原状并计数 `fc_archive_failed_total`；提供 `fcoffer archive restore --symbol ...` 回读校验。
+归档任务幂等：先上传再置空，失败保持原状并以 `ops.archive_job` 的 `status = 'failed'` 记录（对外指标为 `fc_archive_job_total{status="failed"}`，DEC-0022）；提供 `fcoffer archive restore --symbol ...` 回读校验。
 
 ## 5. 混合检索（防性能雪崩）
 
@@ -205,12 +205,22 @@ CREATE INDEX idx_ann_chunk_embedding
 | 指标 | 类型 | 说明 |
 | --- | --- | --- |
 | `fc_etl_consume_lag_seconds` | Gauge | 消费延迟，> 60s 告警 |
-| `fc_etl_events_total{status}` | Counter | 消费成功/失败 |
+| `fc_etl_events_total{status}` | Counter | 消费成功/失败；`status` ∈ `received/processing/done/failed/dlq/duplicate` |
 | `fc_dirty_data_total{reason}` | Counter | 落库脏数据 / 勾稽失败总数 |
 | `fc_missing_chunk_total` | Counter | 大文本转存或切片失败数 |
-| `fc_archive_failed_total` | Counter | MinIO 归档失败 |
+| `fc_archive_job_total{status}` | Counter | 归档任务；`status` ∈ `pending/running/done/failed`，`failed` 即归档失败（DEC-0022，唯一名字） |
+| `fc_vector_chunks_total{status}` | Counter | 切片写入/删除行数 |
+| `fc_vector_embeddings_total{status}` | Counter | 向量接受/拒收条数 |
 | `fc_vector_search_seconds` | Histogram | 混合检索耗时 |
-| `fc_pg_pool_in_use` | Gauge | 连接池占用 |
+| `fc_pg_pool_in_use` | — | **不适用，不再暴露**（原因见下） |
+
+三条输出约定（DEC-0022）：
+
+1. **注册即输出**：上表每个家族在每次抓取时都会出现，没有数据时输出 0 值基线，不按「非空才渲染」。`status` / `reason` 的零值基线取 DDL 的 CHECK 值域与 `etl/processor.py:classify_failure` 的固定分类；其他 `reason` 出现时按实际值追加。`ops.*` 采样失败时同样输出零值基线，并在 API 日志打 WARN（`metrics: ops sample unavailable`），避免「无告警」被误读为「一切正常」。
+2. **仅 Prometheus 文本格式**：`/metrics` 只输出 `text/plain; version=0.0.4`，`Accept` 头不影响响应体；Prometheus 只解析该格式，需要 JSON 的脚本请用 CLI `fcoffer metrics --format json`（客户端转换）。
+3. **归档指标只有一个名字**：`fc_archive_job_total{status}`。`fc_archive_failed_total` 已废弃，不再出现在 `/metrics`，也不再出现在 `fcoffer archive stats|verify` 的 JSON（失败数读同结构的 `failed` 字段）。
+
+`fc_pg_pool_in_use` 不适用：查询层用 psycopg **直连**（`query/service.py` 的 `_connect()`），每个请求建连、结束即归还，进程内没有连接池可采样；持有 SQLAlchemy 池的 worker 不暴露 HTTP 端口。按「不伪造恒为 0 的指标」原则不实现该家族，等真正引入连接池后再补真实数值。
 
 上游指标 `qf_stockdata_source_error_total`、`qf_stockdata_proxy_active_count` 由 TickHub 暴露，FinanceCoffer 只做告警规则引用，不重复定义。
 
@@ -270,3 +280,4 @@ CREATE INDEX idx_ann_chunk_embedding
 | 2026-10-27 | v0.3 | G-11 改为运行时开关 `FC_COMPLIANCE_ENABLED`（默认关闭，DEC-0010）；§6.2 REST 接口进入实现范围 |
 | 2026-10-27 | v0.4 | T-017a：`cli.md` 新增错误码表（第 5 节），同步 §6.2 的交叉引用 |
 | 2026-10-27 | v0.5 | 清理历史产品名与内部环境信息，文档只保留 FinanceCoffer 命名 |
+| 2026-10-29 | v0.6 | §7 改为「注册即输出」（无数据输出 0 值基线）、明确 `/metrics` 仅 Prometheus 文本格式（`Accept` 不生效，JSON 走 CLI）、归档指标统一为 `fc_archive_job_total{status}`（DEC-0022，`fc_archive_failed_total` 废弃，§4.5 同步）、`fc_pg_pool_in_use` 标注不适用（查询层 psycopg 直连，无连接池）；补登 `fc_vector_chunks_total`、`fc_vector_embeddings_total`、`fc_archive_job_total` 的 `status` 值域 |

@@ -33,7 +33,6 @@ METRICS = {
     "fc_missing_chunk_total",
     "fc_vector_search_seconds",
     "fc_archive_job_total",
-    "fc_db_pool_in_use",
 }
 
 _INTERPOLATION = re.compile(r"^\$\{[A-Z0-9_]+(?::[-?][^}]*)?\}$")
@@ -192,7 +191,6 @@ def test_alert_rules_reference_known_metrics() -> None:
         expressions["FinanceCofferArchiveJobFailed"]
         == 'increase(fc_archive_job_total{status="failed"}[5m]) > 0'
     )
-    assert expressions["FinanceCofferDbPoolSaturated"] == "fc_db_pool_in_use > 12"
 
 
 def test_every_alert_metric_is_explained_in_the_readme() -> None:

@@ -33,6 +33,24 @@ SEARCH_BUCKETS: tuple[float, ...] = (
     10.0,
 )
 
+#: Label values this layer itself mints; rendered at zero before they occur so
+#: the family never disappears from ``/metrics`` (QUOT-127). Reasons raised by
+#: the embedding client are appended with their real counts when they happen.
+MISSING_CHUNK_REASONS: tuple[str, ...] = ("embedding_failed",)
+CHUNK_STATUSES: tuple[str, ...] = ("written", "deleted")
+EMBEDDING_STATUSES: tuple[str, ...] = ("ok", "rejected")
+
+
+def _with_baseline(
+    baseline: tuple[str, ...], observed: list[tuple[str, int]]
+) -> list[tuple[str, int]]:
+    """Return ``baseline`` at zero, overlaid with (and extended by) ``observed``."""
+
+    counts = dict.fromkeys(baseline, 0)
+    for key, value in observed:
+        counts[key] = value
+    return sorted(counts.items())
+
 
 def _format_seconds(value: float) -> str:
     return f"{value:.6f}"
@@ -113,7 +131,12 @@ class VectorMetrics:
             }
 
     def render(self) -> str:
-        """Render the Prometheus text exposition (version 0.0.4)."""
+        """Render the Prometheus text exposition (version 0.0.4).
+
+        Every family is rendered on every scrape: the label values this layer
+        mints are emitted at 0 before they first occur, so a cold process
+        exposes the whole documented set instead of only the parts that moved.
+        """
 
         with self._lock:
             missing = sorted(self._missing.items())
@@ -127,7 +150,7 @@ class VectorMetrics:
             "# HELP fc_missing_chunk_total Chunks lost to slicing or embedding failures.",
             "# TYPE fc_missing_chunk_total counter",
         ]
-        for reason, value in missing:
+        for reason, value in _with_baseline(MISSING_CHUNK_REASONS, missing):
             lines.append(f'fc_missing_chunk_total{{reason="{reason}"}} {value}')
 
         lines.extend(
@@ -136,7 +159,7 @@ class VectorMetrics:
                 "# TYPE fc_vector_chunks_total counter",
             ]
         )
-        for status, value in chunks:
+        for status, value in _with_baseline(CHUNK_STATUSES, chunks):
             lines.append(f'fc_vector_chunks_total{{status="{status}"}} {value}')
 
         lines.extend(
@@ -145,7 +168,7 @@ class VectorMetrics:
                 "# TYPE fc_vector_embeddings_total counter",
             ]
         )
-        for status, value in embeddings:
+        for status, value in _with_baseline(EMBEDDING_STATUSES, embeddings):
             lines.append(f'fc_vector_embeddings_total{{status="{status}"}} {value}')
 
         lines.extend(

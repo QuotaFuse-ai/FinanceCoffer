@@ -55,19 +55,5 @@ groups:
             {{ $value }} archive jobs per second failed within the last five
             minutes. Verify MinIO reachability and bucket permissions.
 
-      # No sampling point: the API opens per-request connections, so the pod
-      # serving /metrics has no pool. The 15-connection ceiling belongs to the
-      # worker's Database. See deploy/README.md section "监控".
-      - alert: FinanceCofferDbPoolSaturated
-        # SQLAlchemy pool ceiling: pool_size 5 + max_overflow 10 = 15
-        # connections; warn above 80%.
-        expr: fc_db_pool_in_use > 12
-        for: 5m
-        labels:
-          severity: warning
-          service: financecoffer
-        annotations:
-          summary: "Database connection pool near capacity"
-          description: >-
-            {{ $value }} of 15 connections are checked out. Look for slow
-            queries or leaked sessions.
+      # No pool alert on purpose: this product exposes no pool metric family, so
+      # any such rule would stay silent forever. Rationale: docs/specs/financecoffer.md §7.

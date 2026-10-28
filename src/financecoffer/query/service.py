@@ -188,7 +188,8 @@ class BusinessMetrics:
     is the publisher's business timestamp, so a legitimate backfill of an old
     report would show up as enormous "lag" the moment it is queued. It is
     ``None`` only when a row is pending but carries no ``received_at``; the
-    scrape then omits the gauge instead of guessing.
+    scrape then reports 0 and logs that the sample is unavailable, because a
+    registered gauge may not disappear (QUOT-127).
     """
 
     etl_events: dict[str, int]
@@ -298,9 +299,10 @@ class QueryService:
     def business_metrics(self) -> BusinessMetrics | None:
         """Sample the ``ops.*`` counters behind the specification metrics.
 
-        Returns ``None`` when ``ops`` cannot be read, so ``/metrics`` omits
-        those families rather than inventing zeros. Only counts are read; the
-        query layer stays read-only.
+        Returns ``None`` when ``ops`` cannot be read; ``/metrics`` still exports
+        those families, at their zero baseline, and logs the failed sample —
+        a family that vanishes is indistinguishable from "nothing happened"
+        (QUOT-127). Only counts are read; the query layer stays read-only.
         """
 
         try:

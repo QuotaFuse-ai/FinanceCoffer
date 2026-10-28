@@ -682,7 +682,7 @@ def test_run_reports_a_broken_announcement_without_aborting_the_batch() -> None:
 
     assert payload["archived"] == 1
     assert payload["failed"] == 1
-    assert payload["fc_archive_failed_total"] == 1
+    assert payload["failed"] == 1
     assert payload["failures"][0]["primary_key"] == {"id": 3}
     assert payload["failures"][0]["reason"] == "content_hash does not match the stored body"
     # The row is booked in the job ledger, but through the in-memory journal of

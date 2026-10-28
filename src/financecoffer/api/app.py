@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from financecoffer import __version__
+from financecoffer.api.metrics import render_ops_metrics
 from financecoffer.api.ratelimit import TokenBucket
 from financecoffer.config.loader import load_config
 from financecoffer.core.config import Config
@@ -122,6 +123,11 @@ class _Metrics:
 
     def __init__(self) -> None:
         self._requests: Counter[tuple[str, str, int]] = Counter()
+        #: Pre-register the scrape route so ``fc_api_requests_total`` exists from
+        #: the first scrape instead of appearing only after the second one: the
+        #: middleware records a request after its response is ready, so the
+        #: series would otherwise be missing on a cold process (QUOT-127).
+        self._requests[("GET", "/metrics", 200)] = 0
         self._seconds = 0.0
 
     def record(self, method: str, path: str, status: int, seconds: float) -> None:
@@ -143,47 +149,10 @@ class _Metrics:
                 f"fc_api_request_seconds_total {self._seconds:.6f}",
             ]
         )
-        if business is not None:
-            lines.extend(_render_business_metrics(business))
+        lines.extend(render_ops_metrics(business))
         return "\n".join(lines) + "\n"
 
 
-def _label(value: str) -> str:
-    """Escape a free-text label value per the Prometheus text format."""
-
-    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-
-
-def _render_business_metrics(business: BusinessMetrics) -> list[str]:
-    """Render the ``ops.*`` families, skipping any family with no samples.
-
-    A family is omitted rather than published as zero when the warehouse reads
-    empty or the probe failed: the contract forbids inventing values.
-    """
-
-    lines: list[str] = []
-    if business.etl_events:
-        lines.append("# HELP fc_etl_events_total ETL events recorded per status.")
-        lines.append("# TYPE fc_etl_events_total counter")
-        for status, count in sorted(business.etl_events.items()):
-            lines.append(f'fc_etl_events_total{{status="{_label(status)}"}} {count}')
-    if business.dirty_data:
-        lines.append("# HELP fc_dirty_data_total Dead-lettered events per reason.")
-        lines.append("# TYPE fc_dirty_data_total counter")
-        for reason, count in sorted(business.dirty_data.items()):
-            lines.append(f'fc_dirty_data_total{{reason="{_label(reason)}"}} {count}')
-    if business.archive_jobs:
-        lines.append("# HELP fc_archive_job_total Archive jobs per status.")
-        lines.append("# TYPE fc_archive_job_total counter")
-        for status, count in sorted(business.archive_jobs.items()):
-            lines.append(f'fc_archive_job_total{{status="{_label(status)}"}} {count}')
-    if business.consume_lag_seconds is not None:
-        lines.append(
-            "# HELP fc_etl_consume_lag_seconds Age of the oldest event still queued for ETL."
-        )
-        lines.append("# TYPE fc_etl_consume_lag_seconds gauge")
-        lines.append(f"fc_etl_consume_lag_seconds {business.consume_lag_seconds:.3f}")
-    return lines
 
 
 class AnnouncementSearchRequest(BaseModel):
@@ -403,9 +372,21 @@ def create_app(
 
     @app.get("/metrics", response_class=PlainTextResponse)
     def metrics(request: Request) -> PlainTextResponse:
+        """Expose every family in the Prometheus text format, always.
+
+        The body is Prometheus text exposition whatever ``Accept`` says
+        (``financecoffer.md`` §7, DEC-0022): Prometheus parses only this format,
+        and the CLI's ``fcoffer metrics --format json`` already converts it to
+        JSON for scripts. Families are registered, not conditional: an idle
+        warehouse reports zeros rather than dropping the family.
+        """
+
+        business = _service(request).business_metrics()
+        if business is None or business.consume_lag_seconds is None:
+            _log.warning("metrics: ops sample unavailable, exporting the zero baseline")
         vector_text = VECTOR_METRICS.render() if VECTOR_METRICS is not None else ""
         return PlainTextResponse(
-            request.app.state.metrics.render(_service(request).business_metrics()) + vector_text,
+            request.app.state.metrics.render(business) + vector_text,
             media_type="text/plain; version=0.0.4; charset=utf-8",
         )
 

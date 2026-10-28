@@ -322,7 +322,7 @@ def test_dry_run_on_an_empty_warehouse_reports_zero(scratch_database: Database) 
     assert payload["data"]["dry_run"] is True
     assert payload["data"]["candidates"] == 0
     assert payload["data"]["archived"] == 0
-    assert payload["data"]["fc_archive_failed_total"] == 0
+    assert payload["data"]["failed"] == 0
     assert payload["meta"]["source"] == "archive"
     assert _count(scratch_database, StockAnnouncement) == 0
 
@@ -453,7 +453,7 @@ def test_archive_restore_and_verify_round_trip(
     verified = service.verify(sample=100)
 
     assert verified["failed"] >= 1
-    assert verified["fc_archive_failed_total"] >= 1
+    assert verified["failed"] >= 1
     assert any(item["reason"] == "sha256 mismatch" for item in verified["failures"])
 
     damaged = service.restore(SYMBOL)

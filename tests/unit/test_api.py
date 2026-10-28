@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,7 +14,10 @@ from financecoffer.core.errors import (
     FinanceCofferError,
     InvalidArgumentError,
     NotFoundError,
+    NotImplementedYetError,
+    StorageError,
 )
+from financecoffer.etl.processor import classify_failure
 from financecoffer.query.service import (
     MAX_QUERY_CHARS,
     MAX_RISK_LIMIT,
@@ -24,6 +28,7 @@ from financecoffer.query.service import (
 )
 
 DSN = "postgresql://fcoffer:secret@127.0.0.1:5432/financecoffer"
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _no_io(*args: Any, **kwargs: Any) -> Any:
@@ -396,30 +401,96 @@ def test_metrics_render_business_families_from_the_warehouse() -> None:
     assert "# TYPE fc_etl_consume_lag_seconds gauge" in text
 
 
-def test_metrics_omit_families_that_have_no_samples() -> None:
+def test_metrics_render_every_business_family_at_zero_when_idle() -> None:
     service = FakeService(
         business=BusinessMetrics(
-            etl_events={}, dirty_data={}, archive_jobs={}, consume_lag_seconds=None
+            etl_events={}, dirty_data={}, archive_jobs={}, consume_lag_seconds=0.0
         )
     )
 
     text = _client(service).get("/metrics").text
 
-    for family in (
-        "fc_etl_events_total",
-        "fc_dirty_data_total",
-        "fc_archive_job_total",
-        "fc_etl_consume_lag_seconds",
-    ):
-        assert family not in text
+    # A registered family never disappears: an idle warehouse reports zeros.
+    assert "# TYPE fc_etl_events_total counter" in text
+    assert 'fc_etl_events_total{status="received"} 0' in text
+    assert 'fc_etl_events_total{status="duplicate"} 0' in text
+    assert 'fc_dirty_data_total{reason="validation"} 0' in text
+    assert 'fc_archive_job_total{status="pending"} 0' in text
+    assert 'fc_archive_job_total{status="failed"} 0' in text
+    assert "fc_etl_consume_lag_seconds 0.000" in text
 
 
-def test_metrics_still_render_when_the_warehouse_cannot_be_sampled() -> None:
+def test_metrics_baseline_covers_every_status_the_ddl_allows() -> None:
+    from financecoffer.api.metrics import (
+        ARCHIVE_JOB_STATUSES,
+        DIRTY_REASONS,
+        ETL_EVENT_STATUSES,
+    )
+
+    migration = (ROOT / "src/financecoffer/db/migrations/0002_ops.sql").read_text(
+        encoding="utf-8"
+    )
+
+    for status in ETL_EVENT_STATUSES:
+        assert f"'{status}'" in migration
+    for status in ARCHIVE_JOB_STATUSES:
+        assert f"'{status}'" in migration
+
+    # The dirty-reason baseline must stay producible by the classifier.
+    reasons = {
+        classify_failure(exc).reason
+        for exc in (
+            InvalidArgumentError("bad", details={"reason": "validation"}),
+            NotImplementedYetError("unsupported"),
+            StorageError("storage"),
+            DependencyError("dependency"),
+            OSError("internal"),
+        )
+    }
+    assert reasons <= set(DIRTY_REASONS)
+
+
+def test_metrics_still_render_every_family_when_the_warehouse_cannot_be_sampled() -> None:
     response = _client(FakeService(business=None)).get("/metrics")
 
     assert response.status_code == 200
     assert "fc_api_requests_total" in response.text
-    assert "fc_etl_events_total" not in response.text
+    assert "# TYPE fc_etl_events_total counter" in response.text
+    assert 'fc_etl_events_total{status="received"} 0' in response.text
+    assert 'fc_archive_job_total{status="pending"} 0' in response.text
+
+
+def test_metrics_export_the_scrape_series_on_a_cold_process() -> None:
+    """The very first scrape must already list ``fc_api_requests_total``."""
+
+    text = _client().get("/metrics").text
+
+    assert 'fc_api_requests_total{method="GET",path="/metrics",status="200"} 0' in text
+
+
+def test_metrics_are_prometheus_text_whatever_accept_says() -> None:
+    """``/metrics`` is text-only by contract (DEC-0022); JSON comes from the CLI."""
+
+    response = _client().get("/metrics", headers={"Accept": "application/json"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain; version=0.0.4")
+    assert "# TYPE fc_etl_events_total counter" in response.text
+
+
+def test_metrics_are_not_rate_limited() -> None:
+    limiter = TokenBucket(rate_per_minute=1, burst=1)
+    config = Config(db_url=DSN, rate_limit_enabled=False)
+    client = TestClient(
+        create_app(config=config, service=FakeService(), rate_limiter=limiter)
+    )
+    assert client.get("/v1/structured/600000").status_code == 200
+
+    for _ in range(3):
+        response = client.get("/metrics")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/plain")
 
 
 def test_metrics_include_the_vector_layer_series() -> None:
