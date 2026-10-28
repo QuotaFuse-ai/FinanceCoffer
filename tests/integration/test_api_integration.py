@@ -494,14 +494,15 @@ def test_health_reports_each_component(client: TestClient) -> None:
     assert body["ok"] is True
     assert body["data"]["status"] == "ok"
     checks = body["data"]["checks"]
-    assert checks["database"] == "ok"
-    assert checks["embedding"] == "ok"
+    assert checks["database"]["status"] == "ok"
+    assert checks["embedding"]["status"] == "ok"
     # Redis is reported for visibility and does not take part in the aggregate
-    # status yet, so its value is asserted by shape only.
+    # status, so its value is asserted by shape only.
     assert set(checks["redis"]) == {"status", "elapsed_ms"}
     # The etl probe shares its definition with fc_etl_consume_lag_seconds and,
     # like redis, is reported for visibility only.
     assert set(checks["etl"]) == {"status", "lag_seconds", "pending"}
+    assert checks["etl"]["status"] in {"ok", "degraded", "unreachable"}
 
 
 def test_health_degrades_without_crashing_when_embedding_is_down(
@@ -514,8 +515,8 @@ def test_health_degrades_without_crashing_when_embedding_is_down(
     body = response.json()
     assert body["ok"] is True
     assert body["data"]["status"] == "degraded"
-    assert body["data"]["checks"]["database"] == "ok"
-    assert body["data"]["checks"]["embedding"] == "unreachable"
+    assert body["data"]["checks"]["database"]["status"] == "ok"
+    assert body["data"]["checks"]["embedding"]["status"] == "unreachable"
 
     # The process keeps serving reads that do not need the model.
     assert down.get(f"/v1/structured/{SYMBOL}").status_code == 200

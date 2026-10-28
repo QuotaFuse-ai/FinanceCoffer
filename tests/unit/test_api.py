@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 import redis
+import yaml
 from fastapi.testclient import TestClient
 
 from financecoffer.api import create_app
-from financecoffer.api.health import etl_check
+from financecoffer.api.health import ETL_LAG_DEGRADED_SECONDS, etl_check
 from financecoffer.api.ratelimit import TokenBucket
 from financecoffer.core.config import Config
 from financecoffer.core.errors import (
@@ -60,11 +62,14 @@ class FakeService:
         self.business = business
         self.queue = queue
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+        self.probes: list[str] = []
 
     def ping(self) -> bool:
+        self.probes.append("database")
         return self.healthy
 
     def embedding_ready(self) -> bool:
+        self.probes.append("embedding")
         return self.embedding_ok
 
     def business_metrics(self) -> BusinessMetrics | None:
@@ -158,12 +163,29 @@ def test_health_ok_reports_envelope_and_switch_state(
     assert payload["ok"] is True
     assert payload["data"]["status"] == "ok"
     checks = payload["data"]["checks"]
-    assert checks["database"] == "ok"
-    assert checks["embedding"] == "ok"
+    assert checks["database"]["status"] == "ok"
+    assert checks["embedding"]["status"] == "ok"
     assert checks["redis"]["status"] == "ok"
     assert payload["data"]["compliance_enabled"] is True
     assert payload["data"]["version"]
     assert payload["meta"]["trace_id"]
+
+
+def test_health_checks_all_share_one_shape_and_vocabulary(
+    redis_server: Callable[..., _FakeRedis],
+) -> None:
+    redis_server()
+
+    checks = _client(FakeService()).get("/health").json()["data"]["checks"]
+
+    assert set(checks) == {"database", "embedding", "redis", "etl"}
+    for name, check in checks.items():
+        assert isinstance(check, dict), name
+        assert check["status"] in {"ok", "degraded", "unreachable", "not_configured"}, name
+    # elapsed_ms is present wherever a probe actually measured something.
+    for name in ("database", "embedding", "redis"):
+        assert isinstance(checks[name]["elapsed_ms"], float), name
+        assert checks[name]["elapsed_ms"] >= 0, name
 
 
 def test_health_degraded_when_database_is_unreachable(
@@ -176,9 +198,42 @@ def test_health_degraded_when_database_is_unreachable(
 
     assert payload["ok"] is True
     assert payload["data"]["status"] == "degraded"
-    assert payload["data"]["checks"]["database"] == "unreachable"
-    assert payload["data"]["checks"]["embedding"] == "ok"
+    assert payload["data"]["checks"]["database"]["status"] == "unreachable"
+    assert isinstance(payload["data"]["checks"]["database"]["elapsed_ms"], float)
+    assert payload["data"]["checks"]["embedding"]["status"] == "ok"
     assert payload["data"]["compliance_enabled"] is False
+
+
+def test_health_degrades_when_database_is_not_configured(
+    redis_server: Callable[..., _FakeRedis],
+) -> None:
+    redis_server()
+    service = FakeService()
+    service.config = Config(db_url=None)
+
+    payload = _client(service).get("/health").json()
+
+    database = payload["data"]["checks"]["database"]
+    assert database == {"status": "not_configured"}
+    # No probe was issued, so there is no measurement to report.
+    assert "elapsed_ms" not in database
+    # An unconfigured core dependency cannot serve reads: the process is not ready.
+    assert payload["data"]["status"] == "degraded"
+
+
+def test_health_degrades_when_embedding_url_is_not_configured(
+    redis_server: Callable[..., _FakeRedis],
+) -> None:
+    redis_server()
+    service = FakeService()
+    service.config = Config.model_construct(embedding_url="")
+
+    payload = _client(service).get("/health").json()
+
+    assert payload["data"]["checks"]["embedding"] == {"status": "not_configured"}
+    # Nothing was dialled: an unconfigured endpoint is not probed.
+    assert "embedding" not in service.probes
+    assert payload["data"]["status"] == "degraded"
 
 
 def test_health_degraded_when_embedding_is_unreachable(
@@ -193,8 +248,8 @@ def test_health_degraded_when_embedding_is_unreachable(
     payload = response.json()
     assert payload["ok"] is True
     assert payload["data"]["status"] == "degraded"
-    assert payload["data"]["checks"]["database"] == "ok"
-    assert payload["data"]["checks"]["embedding"] == "unreachable"
+    assert payload["data"]["checks"]["database"]["status"] == "ok"
+    assert payload["data"]["checks"]["embedding"]["status"] == "unreachable"
 
 
 def test_health_reports_redis_as_ok_with_its_own_timing(
@@ -228,6 +283,21 @@ def test_health_stays_200_and_keeps_its_shape_when_redis_is_unreachable(
     assert checks["redis"]["status"] == "unreachable"
     assert isinstance(checks["redis"]["elapsed_ms"], float)
     # The aggregate status still turns on database and embedding only.
+    assert payload["data"]["status"] == "ok"
+
+
+def test_health_reports_redis_as_not_configured_without_the_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A base install (no ``financecoffer[etl]`` extra) has no redis client, so
+    # the probe can never dial: that is ``not_configured``, not ``unreachable``.
+    monkeypatch.setitem(sys.modules, "redis", None)
+
+    payload = _client(FakeService()).get("/health").json()
+
+    assert payload["data"]["checks"]["redis"]["status"] == "not_configured"
+    assert isinstance(payload["data"]["checks"]["redis"]["elapsed_ms"], float)
+    # Redis never moves the aggregate, whatever it reports.
     assert payload["data"]["status"] == "ok"
 
 
@@ -282,16 +352,63 @@ def _etl_service(row: tuple[Any, ...] | None) -> QueryService:
 def test_etl_probe_reports_zero_when_nothing_is_queued() -> None:
     check = etl_check(_etl_service((0, None)))
 
-    assert check == {"status": "unknown", "lag_seconds": 0.0, "pending": 0}
+    assert check == {"status": "ok", "lag_seconds": 0.0, "pending": 0}
 
 
-def test_etl_probe_reports_the_oldest_pending_event() -> None:
+def test_etl_probe_calls_a_short_backlog_ok() -> None:
+    """A backlog below the alert threshold is normal consumption in progress."""
+
     check = etl_check(_etl_service((3, 42.5)))
 
-    assert check == {"status": "unknown", "lag_seconds": 42.5, "pending": 3}
+    assert check == {"status": "ok", "lag_seconds": 42.5, "pending": 3}
 
 
-def test_health_reports_the_etl_queue_without_judging_it(
+def test_etl_probe_degrades_past_the_alert_threshold() -> None:
+    check = etl_check(_etl_service((3, ETL_LAG_DEGRADED_SECONDS + 1)))
+
+    assert check["status"] == "degraded"
+    assert check["pending"] == 3
+    assert check["lag_seconds"] == ETL_LAG_DEGRADED_SECONDS + 1
+
+
+def test_etl_probe_degrades_a_backlog_of_unknown_age() -> None:
+    """Pending rows with no ``received_at`` are a backlog we cannot date: still
+    a backlog, so it must not be reported as ``ok``."""
+
+    check = etl_check(_etl_service((4, None)))
+
+    assert check == {"status": "degraded", "lag_seconds": None, "pending": 4}
+
+
+def test_etl_probe_reports_unreachable_when_it_cannot_sample() -> None:
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("warehouse down")
+
+    service = QueryService(config=Config(db_url=DSN), timeout=0, connector=boom)
+
+    assert etl_check(service) == {
+        "status": "unreachable",
+        "lag_seconds": None,
+        "pending": None,
+    }
+
+
+def test_etl_degraded_threshold_matches_the_alert_rule() -> None:
+    """The probe and ``FinanceCofferEtlConsumeLagHigh`` must judge the same lag."""
+
+    rules = yaml.safe_load((ROOT / "deploy" / "prometheus" / "rules.yml").read_text("utf-8"))
+    expressions = {
+        rule["alert"]: rule["expr"]
+        for group in rules["groups"]
+        for rule in group["rules"]
+    }
+
+    assert expressions["FinanceCofferEtlConsumeLagHigh"] == (
+        f"fc_etl_consume_lag_seconds > {ETL_LAG_DEGRADED_SECONDS:g}"
+    )
+
+
+def test_health_reports_the_etl_queue_without_touching_the_aggregate(
     redis_server: Callable[..., _FakeRedis],
 ) -> None:
     redis_server()
@@ -299,9 +416,20 @@ def test_health_reports_the_etl_queue_without_judging_it(
     payload = _client(FakeService(queue=(2, 7.25))).get("/health").json()
 
     checks = payload["data"]["checks"]
-    assert checks["etl"] == {"status": "unknown", "lag_seconds": 7.25, "pending": 2}
+    assert checks["etl"] == {"status": "ok", "lag_seconds": 7.25, "pending": 2}
     # Like redis, the etl probe is reported for visibility only.
     assert payload["data"]["status"] == "ok", checks
+
+
+def test_health_stays_ok_when_the_etl_queue_is_degraded(
+    redis_server: Callable[..., _FakeRedis],
+) -> None:
+    redis_server()
+
+    payload = _client(FakeService(queue=(9, 3600.0))).get("/health").json()
+
+    assert payload["data"]["checks"]["etl"]["status"] == "degraded"
+    assert payload["data"]["status"] == "ok"
 
 
 def test_structured_returns_data_with_service_meta() -> None:

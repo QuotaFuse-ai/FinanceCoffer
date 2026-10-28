@@ -284,6 +284,24 @@ fcoffer metrics [--format prometheus|json]
 fcoffer health [--check db,minio,redis,etl] [--output json]
 ```
 
+`fcoffer health` 的检查项是 `db` / `minio` / `redis` / `etl`，`data` 形如：
+
+```json
+{
+  "status": "degraded",
+  "checks": [
+    {"name": "db", "status": "ok", "reason": "PostgreSQL 16.4 with vector extension",
+     "details": {"version": "16.4", "extensions": ["vector"], "database": "…"}},
+    {"name": "etl", "status": "warn",
+     "reason": "consumer group fc-etl is not attached to fc:stockdata:events; the ETL consumer does not appear to be running",
+     "details": {"stream": "fc:stockdata:events", "group": "fc-etl"}}
+  ],
+  "failed": []
+}
+```
+
+单项 `status` 词表为 `ok` / `warn` / `fail`（与 REST `/health` 的 `ok` / `degraded` / `unreachable` / `not_configured` **刻意不同，互不兼容**）；整体 `status` 为 `ok` / `degraded` / `fail`：任一 `fail` → `E_DEPENDENCY`（退出码 5），只有 `warn` → `degraded`（退出码 0）。CLI 是运维诊断工具，需要覆盖 `minio` 并用退出码把可选依赖异常带进脚本；REST `/health` 是编排探针，只对核心依赖降级。两边的检查项、词表、`etl` 语义（CLI 查 Redis Stream 消费组，REST 查 `ops` 表积压）的逐项对照见 `financecoffer.md` §6.2.1。
+
 指标清单（本产品）：
 
 | 指标 | 类型 | 告警 |

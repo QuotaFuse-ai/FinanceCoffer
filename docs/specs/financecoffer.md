@@ -1,6 +1,6 @@
 # FinanceCoffer 产品规格
 
-版本：v0.6（设计稿）
+版本：v0.7（设计稿）
 变更规则：本文件为最新版本，每次修改必须在文末「变更记录」追加一行。
 
 ## 1. 产品定位
@@ -192,6 +192,99 @@ CREATE INDEX idx_ann_chunk_embedding
 - `GET /v1/structured/{symbol}`、`POST /v1/search/announcements`、`GET /v1/risk/{symbol}`
 - 统一返回信封：`{code, message, data, trace_id}`；错误码见 `docs/specs/cli.md` 第 5 节。
 
+#### 6.2.1 `GET /health` 就绪检查
+
+`/health` 是编排系统的就绪探针：**永不抛错、永不返回 5xx**。依赖挂掉只体现在 `checks` 与整体 `status` 上，不会被误读成「API 进程坏了」。响应仍是标准信封，`data`：
+
+```json
+{
+  "status": "ok",
+  "version": "0.1.0",
+  "checks": {
+    "database": {"status": "ok", "elapsed_ms": 3.41},
+    "embedding": {"status": "ok", "elapsed_ms": 12.08},
+    "redis": {"status": "ok", "elapsed_ms": 0.83},
+    "etl": {"status": "ok", "lag_seconds": 0.0, "pending": 0}
+  },
+  "compliance_enabled": false
+}
+```
+
+**统一形状**：`checks` 每一项都是对象，`status` 必填，各项自有字段留在对象内。`elapsed_ms` 是探测耗时（两位小数）；**只有真正发起了探测才有**——`not_configured` 不探测，也就不给 `elapsed_ms`。
+
+**`status` 词表是闭集，五项共用，不允许出现第五个值**：
+
+| 值 | 含义 |
+| --- | --- |
+| `ok` | 正常 |
+| `degraded` | 连得上，但自身状态不健康（当前只有 etl 的积压用这一档） |
+| `unreachable` | 已配置，但连不上 / 探测抛错 |
+| `not_configured` | 未配置，压根没发起探测 |
+
+`not_installed` 已废止：客户端未安装一律归 `not_configured`。
+
+**`checks` 完整清单**：
+
+| 项 | 取值集合 | 自有字段 | 探测方式 |
+| --- | --- | --- | --- |
+| `database` | `ok` / `unreachable` / `not_configured` | `elapsed_ms`（`not_configured` 时无） | 仓库执行 `SELECT 1`；无 DSN（运行时 DSN 与 `FC_DB_URL` 都为空）→ `not_configured` |
+| `embedding` | `ok` / `unreachable` / `not_configured` | `elapsed_ms`（同上） | 请求 embedding 服务的 `GET /health`，校验 `status` 与维度；`FC_EMBEDDING_URL` 缺 scheme/host → `not_configured` |
+| `redis` | `ok` / `unreachable` / `not_configured` | `elapsed_ms` | 一次 `PING`，单次操作超时 0.5s；redis 客户端未安装（基础安装、未装 `[etl]` extra）→ `not_configured` |
+| `etl` | `ok` / `degraded` / `unreachable` | `lag_seconds`、`pending` | 一条聚合 SQL，与 §7 的 `fc_etl_consume_lag_seconds` 共用同一个定义 |
+| `minio` | `ok` / `unreachable` / `not_configured` | `elapsed_ms` | **尚未实现**：后续按本表补齐，落地前不出现在 `checks` 中 |
+
+**整体判定表**（`status` 只有 `ok` / `degraded` 两档）：
+
+| 场景 | 该项 `status` | 整体 `status` |
+| --- | --- | --- |
+| 全部正常 | 各项 `ok` | `ok` |
+| database 不通 | `unreachable` | `degraded` |
+| database 未配置 | `not_configured` | `degraded` |
+| embedding 不可用 | `unreachable` | `degraded` |
+| embedding 未配置 | `not_configured` | `degraded` |
+| redis 不通 | `unreachable` | `ok` |
+| redis 客户端未安装 | `not_configured` | `ok` |
+| etl 有积压，最老一条等待超过 60 秒 | `degraded` | `ok` |
+| etl 有积压，等待未超过 60 秒 | `ok` | `ok` |
+| etl 无积压 | `ok` | `ok` |
+| etl 采样失败（队列读不到） | `unreachable` | `ok` |
+| minio 未配置 | `not_configured` | `ok` |
+| minio 已配置但连不上 | `unreachable` | `ok` |
+
+判定语义：**只有核心依赖 `database` / `embedding` 不是 `ok`，整体才 `degraded`**。`redis` / `etl` / `minio` 只出现在 `checks` 里，不影响整体 `status`。
+
+**为什么 redis 挂了整体仍是 `ok`**：整体 `status` 决定编排要不要把查询流量路由过来。能服务读请求的进程，不应因为缓存、事件流、归档这类可选或辅助依赖抖动而被摘掉——否则一次 Redis 抖动会连带下线本来可用的查询面。这些依赖的异常由 `checks` 与告警（§7、`deploy/prometheus/rules.yml`）负责暴露。
+
+**etl 的判定口径**：
+
+- 阈值 **60 秒**，对齐既有告警 `FinanceCofferEtlConsumeLagHigh`（`deploy/prometheus/rules.yml`：`fc_etl_consume_lag_seconds > 60`）。单元测试断言两侧一致，避免就绪页与告警页对同一积压给出相反结论。
+- 无积压（`pending == 0`）→ `ok`；最老一条等待超过 60 秒 → `degraded`；未超过 60 秒 → `ok`（正常消费中，告警本身也不在该区间触发）。
+- 采样失败 → `unreachable`，`lag_seconds` / `pending` 均为 `null`。
+- 有积压但取不到 `received_at`（`lag_seconds` 为 `null`）→ `degraded`：已确认有积压，只是测不出严重程度，归 `ok` 会把积压藏起来。
+
+**etl 为什么没有 `elapsed_ms`**：这条探针的产出是「队列里还有多少、最老的等了多久」，单条聚合查询的往返耗时不是运维能据此决策的量；另外四项是点对点连通性探测，耗时本身就是信号，所以有。这里的形状不一致是刻意的，不要为了「整齐」补一个无意义的数值。
+
+**已知限制**：每次 `/health` 会为 `database` 与 `etl` 各开一条独立连接（`ping()` 与 `etl_queue()` 各自建连），即一次请求两条连接。当前未合并为一条，属于已知开销，不是缺陷。
+
+**与 CLI `fcoffer health` 的关系**（同口径 / 刻意不同）：
+
+| 维度 | REST `GET /health` | CLI `fcoffer health` |
+| --- | --- | --- |
+| 检查项 | `database` / `embedding` / `redis` / `etl`（`minio` 待实现） | `db` / `minio` / `redis` / `etl` |
+| `status` 词表 | `ok` / `degraded` / `unreachable` / `not_configured` | `ok` / `warn` / `fail` |
+| 单项形状 | 以名称为键的对象：`{status, elapsed_ms?, ...}` | 数组：`[{name, status, reason, details?}]` |
+| 整体 `status` | `ok` / `degraded`，只看核心依赖 | `ok` / `degraded` / `fail`；任一 `fail` → `E_DEPENDENCY`，退出码 5；只有 `warn` → `degraded`，退出码 0 |
+| 定位 | 编排探针：永不 5xx，不为可选依赖摘流量 | 运维诊断：面向人，可用 `warn` 与退出码表达可选依赖异常 |
+
+同名但语义不同，文档与实现都以本表为准：
+
+- CLI 的 `etl` 检查 **Redis Stream 消费组是否挂上**、有无 idle 超过 60 秒的 pending；REST 的 `etl` 读 **`ops` 表里 `received` / `processing` 状态的积压与最老等待时长**。
+- CLI 的 `db` 探针额外取 `SHOW server_version` 作为诊断信息；REST 只做 `SELECT 1`。
+- CLI 把 `minio` 纳入检查并参与退出码；REST 的 `minio` 尚未实现（见上表），落地后也只进 `checks`、不影响整体。
+
+刻意不同的原因：两者读者不同。REST 由编排消费，必须保持两档、不被可选依赖左右，且异常只能体现在响应体里；CLI 是人用来问「到底哪里坏了」，需要覆盖 `minio`、用 `warn` / `fail` 分档，并用退出码把可选依赖的故障带进脚本与巡检。因此**两边的输出形状与词表互不兼容，不可互相解析**。
+
+
 ### 6.3 Skill SOP（`skills/financecoffer/SKILL.md`）
 
 - 何时使用：历史长周期数据、模糊语义搜索、历史风险回溯。
@@ -281,3 +374,4 @@ CREATE INDEX idx_ann_chunk_embedding
 | 2026-10-27 | v0.4 | T-017a：`cli.md` 新增错误码表（第 5 节），同步 §6.2 的交叉引用 |
 | 2026-10-27 | v0.5 | 清理历史产品名与内部环境信息，文档只保留 FinanceCoffer 命名 |
 | 2026-10-29 | v0.6 | §7 改为「注册即输出」（无数据输出 0 值基线）、明确 `/metrics` 仅 Prometheus 文本格式（`Accept` 不生效，JSON 走 CLI）、归档指标统一为 `fc_archive_job_total{status}`（DEC-0022，`fc_archive_failed_total` 废弃，§4.5 同步）、`fc_pg_pool_in_use` 标注不适用（查询层 psycopg 直连，无连接池）；补登 `fc_vector_chunks_total`、`fc_vector_embeddings_total`、`fc_archive_job_total` 的 `status` 值域 |
+| 2026-10-29 | v0.7 | 新增 §6.2.1：`/health` 的 `checks` 统一为 `{status, elapsed_ms?, ...}` 对象、`status` 闭集词表（`ok`/`degraded`/`unreachable`/`not_configured`，`not_installed` 废止）、降级判定表、`etl` 以 60 秒告警阈值为积压判定（消灭 `unknown`）、REST 与 CLI `fcoffer health` 的差异及原因、每次请求两连接的已知限制；依据：客户端可消费的形状必须唯一，且就绪判定与告警不得对同一积压给出相反结论 |

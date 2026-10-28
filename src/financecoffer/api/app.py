@@ -18,7 +18,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from financecoffer import __version__
-from financecoffer.api.health import etl_check, redis_check
+from financecoffer.api.health import (
+    database_check,
+    embedding_check,
+    etl_check,
+    redis_check,
+)
 from financecoffer.api.metrics import render_ops_metrics
 from financecoffer.api.ratelimit import TokenBucket
 from financecoffer.config.loader import load_config
@@ -356,24 +361,29 @@ def create_app(
 
     @app.get("/health")
     def health(request: Request) -> JSONResponse:
+        """Readiness report; the table behind it is ``financecoffer.md`` §6.2.1.
+
+        Every entry in ``checks`` has the same shape -- ``{status, elapsed_ms,
+        ...}`` -- and draws ``status`` from one closed vocabulary (``ok`` /
+        ``degraded`` / ``unreachable`` / ``not_configured``). The aggregate
+        turns on the two core dependencies alone: Redis, the ETL queue and
+        object storage are reported for visibility, so their trouble cannot
+        make an otherwise serviceable process look unready.
+        """
+
         query_service: QueryService = request.app.state.query_service
-        database = query_service.ping()
-        embedding = query_service.embedding_ready()
-        # Reported for visibility only: the aggregate status below still turns
-        # on database and embedding alone, so a Redis outage or an ETL backlog
-        # cannot make an otherwise serviceable process look unready.
-        redis = redis_check(query_service.config)
-        etl = etl_check(query_service)
-        healthy = database and embedding
+        checks = {
+            "database": database_check(query_service),
+            "embedding": embedding_check(query_service),
+            "redis": redis_check(query_service.config),
+            "etl": etl_check(query_service),
+        }
+        core = (checks["database"]["status"], checks["embedding"]["status"])
+        healthy = all(status == "ok" for status in core)
         data = {
             "status": "ok" if healthy else "degraded",
             "version": __version__,
-            "checks": {
-                "database": "ok" if database else "unreachable",
-                "embedding": "ok" if embedding else "unreachable",
-                "redis": redis,
-                "etl": etl,
-            },
+            "checks": checks,
             "compliance_enabled": query_service.config.compliance_enabled,
         }
         return _respond(Envelope.success(data, trace_id=_trace_id(request)))
