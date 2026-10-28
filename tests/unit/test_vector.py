@@ -526,7 +526,7 @@ def fake_service(monkeypatch: pytest.MonkeyPatch) -> type[_FakeService]:
     _FakeService.payload = {}
     _FakeService.report = None
     _FakeService.error = None
-    monkeypatch.setattr(vector_module, "load_config", lambda **_: config())
+    monkeypatch.setattr(vector_module, "load_cli_config", lambda **_: config())
     monkeypatch.setattr(vector_module, "VectorService", _FakeService)
     return _FakeService
 

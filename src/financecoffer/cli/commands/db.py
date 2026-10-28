@@ -15,9 +15,8 @@ from financecoffer.db import (
     describe_dsn,
     list_partitions,
     parse_month,
-    resolve_dsn,
 )
-from financecoffer.db.connection import connect
+from financecoffer.db.connection import connect, resolve_cli_dsn
 from financecoffer.db.migrations import render_sql
 
 
@@ -42,7 +41,9 @@ def register(app: typer.Typer) -> None:
             typer.echo(render_sql(), nl=False)
             return
         try:
-            report = MigrationRunner(options.db_url, timeout=options.timeout).apply(
+            report = MigrationRunner(
+                resolve_cli_dsn(options.db_url), timeout=options.timeout
+            ).apply(
                 revision=revision,
                 ahead_months=ahead,
             )
@@ -54,7 +55,9 @@ def register(app: typer.Typer) -> None:
     def status(ctx: typer.Context) -> None:
         options = from_context(ctx)
         try:
-            report = MigrationRunner(options.db_url, timeout=options.timeout).status()
+            report = MigrationRunner(
+                resolve_cli_dsn(options.db_url), timeout=options.timeout
+            ).status()
         except FinanceCofferError as exc:
             emit_failure(options, exc)
         emit_success(options, report.as_dict())
@@ -73,7 +76,7 @@ def register(app: typer.Typer) -> None:
         try:
             start = parse_month(month) if month else None
             rows = create_partitions(
-                resolve_dsn(options.db_url),
+                resolve_cli_dsn(options.db_url),
                 start_month=start,
                 ahead=ahead,
                 timeout=options.timeout,
@@ -98,7 +101,7 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         options = from_context(ctx)
         try:
-            dsn = resolve_dsn(options.db_url)
+            dsn = resolve_cli_dsn(options.db_url)
             with connect(dsn, timeout=options.timeout) as conn:
                 rows = list_partitions(conn, table)
         except FinanceCofferError as exc:

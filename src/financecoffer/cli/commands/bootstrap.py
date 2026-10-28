@@ -14,7 +14,7 @@ import typer
 from financecoffer.cli.options import from_context
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
-from financecoffer.config.loader import env_var_name, load_config
+from financecoffer.config.loader import env_var_name, load_cli_config
 from financecoffer.core.config import Config
 from financecoffer.core.envelope import Meta
 from financecoffer.core.errors import (
@@ -23,7 +23,7 @@ from financecoffer.core.errors import (
     InvalidArgumentError,
 )
 from financecoffer.core.redaction import redact_text, redact_value
-from financecoffer.db.connection import connect, describe_dsn, resolve_dsn
+from financecoffer.db.connection import connect, describe_dsn, resolve_cli_dsn
 from financecoffer.db.migrations import (
     MIGRATIONS_DIR,
     MigrationRunner,
@@ -141,7 +141,7 @@ def _probe_db(context: ProbeContext) -> dict[str, Any]:
     if not context.dsn:
         return _check("fail", "FC_DB_URL is not configured")
     try:
-        dsn = resolve_dsn(context.dsn)
+        dsn = resolve_cli_dsn(context.dsn)
         with connect(dsn, timeout=context.timeout) as conn, conn.cursor() as cur:
             cur.execute("SHOW server_version")
             version = str(cur.fetchone()[0])
@@ -424,7 +424,7 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         options = from_context(ctx)
         try:
-            dsn = resolve_dsn(db_url or options.db_url)
+            dsn = resolve_cli_dsn(db_url or options.db_url)
             if dry_run:
                 data = _init_plan(dsn, with_extensions=with_extensions)
             else:
@@ -451,7 +451,7 @@ def register(app: typer.Typer) -> None:
         options = from_context(ctx)
         try:
             names = _parse_checks(check)
-            config = load_config(overrides={"db_url": options.db_url})
+            config = load_cli_config(db_url=options.db_url)
             probe_context = ProbeContext(
                 config=config,
                 dsn=options.db_url or config.db_url,
@@ -499,7 +499,7 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         options = from_context(ctx)
         try:
-            resolved = load_config(overrides={"db_url": options.db_url})
+            resolved = load_cli_config(db_url=options.db_url)
         except FinanceCofferError as exc:
             emit_failure(options, exc)
         _ = redact  # redaction is unconditional; the flag only documents intent
@@ -512,7 +512,7 @@ def register(app: typer.Typer) -> None:
     def check(ctx: typer.Context) -> None:
         options = from_context(ctx)
         try:
-            resolved = load_config(overrides={"db_url": options.db_url})
+            resolved = load_cli_config(db_url=options.db_url)
         except FinanceCofferError as exc:
             emit_failure(options, exc)
 

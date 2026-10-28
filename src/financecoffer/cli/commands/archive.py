@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 import typer
@@ -13,21 +12,14 @@ from financecoffer.archive import ArchiveService
 from financecoffer.cli.options import GlobalOptions, from_context
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
-from financecoffer.config.loader import load_config
+from financecoffer.config.loader import load_cli_config
 from financecoffer.core.envelope import Meta
 from financecoffer.core.errors import FinanceCofferError, PartialFailureError, StorageError
-
-#: Read the repository ``.env`` when the command runs from the repo root; CI and
-#: unit tests run without one and fall back to the process environment.
-_ENV_FILE = Path(".env")
 
 
 def _archive_service(options: GlobalOptions) -> ArchiveService:
     try:
-        config = load_config(
-            env_file=_ENV_FILE if _ENV_FILE.is_file() else None,
-            overrides={"db_url": options.db_url},
-        )
+        config = load_cli_config(db_url=options.db_url)
     except FinanceCofferError as exc:
         emit_failure(options, exc)
     return ArchiveService(config=config, dsn=options.db_url, timeout=options.timeout)

@@ -26,7 +26,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from financecoffer.cli.options import GlobalOptions, from_context
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
-from financecoffer.config.loader import load_config
+from financecoffer.config.loader import load_cli_config
 from financecoffer.core.config import Config
 from financecoffer.core.envelope import Envelope, Meta
 from financecoffer.core.errors import (
@@ -427,7 +427,7 @@ def build_webhook_app(
 
 def _config(options: GlobalOptions) -> Config:
     try:
-        config = load_config(overrides={"db_url": options.db_url})
+        config = load_cli_config(db_url=options.db_url)
     except FinanceCofferError as exc:
         emit_failure(options, exc)
     if config.db_url is None:
@@ -460,7 +460,7 @@ def register(app: typer.Typer) -> None:
         options = from_context(ctx)
         try:
             payload, original_text = _read_payload(file)
-            config = load_config(overrides={"db_url": options.db_url})
+            config = load_cli_config(db_url=options.db_url)
             data = _ingest_event(config, payload, original_text, write=not validate_only)
             if validate_only:
                 data["valid"] = True

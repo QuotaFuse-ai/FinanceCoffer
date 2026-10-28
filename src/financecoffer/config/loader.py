@@ -22,11 +22,27 @@ from financecoffer.core.errors import ConfigError
 
 ENV_PREFIX = "FC_"
 
+#: The repo-local file from the documented precedence chain; absent in CI,
+#: containers and on a fresh clone.
+DEFAULT_ENV_FILE = Path(".env")
+
 
 def env_var_name(field_name: str) -> str:
     """Return the canonical environment variable for a config field."""
 
     return f"{ENV_PREFIX}{field_name.upper()}"
+
+
+def default_env_file(path: str | Path = DEFAULT_ENV_FILE) -> Path | None:
+    """Return ``path`` when it is a file, otherwise ``None``.
+
+    Discovery is deliberately silent: a missing ``.env`` means "fall back to the
+    process environment", while an explicitly passed ``env_file`` that does not
+    exist is still an error (see :func:`load_config`).
+    """
+
+    candidate = Path(path)
+    return candidate if candidate.is_file() else None
 
 
 def _extract_known(source: Mapping[str, str | None]) -> dict[str, str]:
@@ -81,3 +97,19 @@ def load_config(
             for error in exc.errors(include_url=False)
         ]
         raise ConfigError("invalid configuration", details={"errors": problems}) from exc
+
+
+def load_cli_config(*, db_url: str | None = None) -> Config:
+    """Load the configuration for one CLI invocation.
+
+    Every command shares one rule: the repo ``.env`` participates when it exists
+    (README precedence: defaults -> ``.env`` -> process environment), and
+    ``--db-url`` wins over both. A command that loads its configuration some
+    other way silently ignores a local ``.env`` and reports "FC_DB_URL is not
+    configured" on a checkout that is configured.
+    """
+
+    return load_config(
+        env_file=default_env_file(),
+        overrides={"db_url": db_url},
+    )

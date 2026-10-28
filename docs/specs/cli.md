@@ -1,11 +1,12 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.5（设计稿）
+版本：v0.6（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
 v0.3 按 T-005 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
 v0.4 按 T-008 实装 `dws build` / `dws show` / `dws rebuild`，§3.9 字段表改为 DDL 口径（指标移入 `metrics_json`），补充确定性、部分失败与合规规则。
 v0.5 `fc_etl_consume_lag_seconds` 的基准从 `event_time` 改为 `received_at`（排队等待时长），避免历史补录被算成巨大延迟。
+v0.6 明确配置解析口径：所有命令按 **内置默认值 → 仓库 `.env` → 进程环境变量 → `--db-url`** 加载，`.env` 按当前工作目录查找、缺失时静默回退；`db migrate/status` 等经 `MigrationRunner` 的命令统一走该路径（此前会忽略本机 `.env` 并报 `FC_DB_URL is not configured`）。
 
 ## 1. 全局参数
 
@@ -23,7 +24,7 @@ fcoffer [GLOBAL OPTIONS] COMMAND [ARGS]...
 | `--refresh-cache` | off | 刷新查询缓存 |
 | `--timeout` | `30` | 单次查询/操作超时（秒） |
 | `--retries` | `2` | 可重试操作的次数 |
-| `--db-url` | 环境变量 | 临时覆盖 `FC_DB_URL` |
+| `--db-url` | `.env` / 环境变量 | 临时覆盖 `FC_DB_URL`（优先级最高） |
 | `--trace-id` | 自动 | 透传链路 ID |
 | `--quiet, -q` | off | 仅 stderr 输出告警/错误 |
 | `--verbose, -v` | off | 调试日志 |

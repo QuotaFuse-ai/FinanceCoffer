@@ -19,7 +19,7 @@ import typer
 from financecoffer.cli.options import GlobalOptions, from_context
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
-from financecoffer.config.loader import load_config
+from financecoffer.config.loader import load_cli_config
 from financecoffer.core.errors import FinanceCofferError, InvalidArgumentError
 from financecoffer.core.logging import log_query_audit
 from financecoffer.mcp.tools import TOOL_SPECS
@@ -146,7 +146,7 @@ def _parse_params(raw: str) -> dict[str, Any]:
 
 def _service(options: GlobalOptions) -> QueryService:
     try:
-        config = load_config(overrides={"db_url": options.db_url})
+        config = load_cli_config(db_url=options.db_url)
     except FinanceCofferError as exc:
         emit_failure(options, exc)
     return QueryService(config=config, dsn=options.db_url, timeout=options.timeout)

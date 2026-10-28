@@ -11,7 +11,8 @@ import re
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from financecoffer.config.loader import load_config
+from financecoffer.config.loader import load_cli_config, load_config
+from financecoffer.core.config import Config
 from financecoffer.core.errors import ConfigError, DependencyError
 from financecoffer.core.redaction import redact_text
 
@@ -24,18 +25,34 @@ def normalize_dsn(dsn: str) -> str:
     return _DRIVER_PREFIX.sub("postgresql://", dsn.strip(), count=1)
 
 
-def resolve_dsn(override: str | None = None) -> str:
-    """Resolve the DSN from the CLI override or the unified ``FC_DB_URL`` config."""
-
-    if override:
-        return normalize_dsn(override)
-    config = load_config()
+def _require_db_url(config: Config) -> str:
     if not config.db_url:
         raise ConfigError(
             "database URL is not configured",
             details={"hint": "set FC_DB_URL or pass --db-url"},
         )
     return normalize_dsn(config.db_url)
+
+
+def resolve_dsn(override: str | None = None) -> str:
+    """Resolve the DSN from the override or the process environment."""
+
+    if override:
+        return normalize_dsn(override)
+    return _require_db_url(load_config())
+
+
+def resolve_cli_dsn(override: str | None = None) -> str:
+    """Resolve the DSN for a CLI invocation, which also reads the repo ``.env``.
+
+    Library callers keep using :func:`resolve_dsn`: a container gets its
+    configuration from the environment, while a developer running ``fcoffer``
+    from a checkout expects the ``.env`` the README tells them to create.
+    """
+
+    if override:
+        return normalize_dsn(override)
+    return _require_db_url(load_cli_config())
 
 
 def describe_dsn(dsn: str) -> dict[str, Any]:

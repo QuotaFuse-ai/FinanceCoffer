@@ -215,6 +215,42 @@ def test_query_risk_forwards_filters_to_the_service(monkeypatch) -> None:
 _DSN = "postgresql://localhost/financecoffer"
 
 
+def test_db_status_hands_the_resolved_dsn_to_the_runner(monkeypatch) -> None:
+    """``db status`` must resolve the DSN before constructing the runner.
+
+    ``MigrationRunner`` falls back to the process environment, so passing
+    ``options.db_url`` (usually ``None``) straight through ignored both the repo
+    ``.env`` and the documented library/CLI split.
+    """
+
+    from financecoffer.cli.commands import db as db_module
+
+    seen: list[str] = []
+
+    class _Report:
+        def as_dict(self) -> dict[str, object]:
+            return {"current_version": 0, "head_version": 0, "pending": [], "applied": []}
+
+    class _Runner:
+        def __init__(self, dsn: str, **_kwargs: object) -> None:
+            seen.append(dsn)
+
+        def status(self) -> _Report:
+            return _Report()
+
+    monkeypatch.setattr(db_module, "MigrationRunner", _Runner)
+
+    result = _invoke(
+        "--db-url",
+        "postgresql+psycopg://app:secret@db.local:5433/warehouse",
+        "db",
+        "status",
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert seen == ["postgresql://app:secret@db.local:5433/warehouse"]
+
+
 def _config(**overrides: object):
     from financecoffer.core.config import Config
 
@@ -242,7 +278,7 @@ def test_config_check_names_missing_environment_variables(monkeypatch) -> None:
     from financecoffer.cli.commands import bootstrap as bootstrap_module
     from financecoffer.core.config import Config
 
-    monkeypatch.setattr(bootstrap_module, "load_config", lambda **_: Config())
+    monkeypatch.setattr(bootstrap_module, "load_cli_config", lambda **_: Config())
 
     result = _invoke("config", "check")
 
@@ -270,7 +306,7 @@ def test_config_check_passes_when_required_values_are_set(monkeypatch) -> None:
 
     monkeypatch.setattr(
         bootstrap_module,
-        "load_config",
+        "load_cli_config",
         lambda **_: _config(minio_access_key="key", minio_secret_key="secret"),
     )
 
@@ -299,7 +335,7 @@ def test_doctor_reports_ok_and_redacts_probe_details(monkeypatch) -> None:
             },
         }
 
-    monkeypatch.setattr(bootstrap_module, "load_config", lambda **_: _config())
+    monkeypatch.setattr(bootstrap_module, "load_cli_config", lambda **_: _config())
     monkeypatch.setattr(bootstrap_module, "_probes", lambda: {"db": probe})
 
     result = _invoke("doctor", "--check", "db")
@@ -316,7 +352,7 @@ def test_doctor_reports_ok_and_redacts_probe_details(monkeypatch) -> None:
 def test_doctor_exits_non_zero_when_a_probe_fails(monkeypatch) -> None:
     from financecoffer.cli.commands import bootstrap as bootstrap_module
 
-    monkeypatch.setattr(bootstrap_module, "load_config", lambda **_: _config())
+    monkeypatch.setattr(bootstrap_module, "load_cli_config", lambda **_: _config())
     monkeypatch.setattr(
         bootstrap_module,
         "_probes",
@@ -377,7 +413,7 @@ def test_metrics_parses_prometheus_text_as_json(monkeypatch) -> None:
 def test_health_reports_degraded_dependencies(monkeypatch) -> None:
     from financecoffer.cli.commands import monitor as monitor_module
 
-    monkeypatch.setattr(monitor_module, "load_config", lambda **_: _config())
+    monkeypatch.setattr(monitor_module, "load_cli_config", lambda **_: _config())
     monkeypatch.setattr(
         monitor_module,
         "health_probes",
@@ -431,7 +467,7 @@ def fake_dwd(monkeypatch):
     from financecoffer.cli.commands import warehouse as warehouse_module
 
     _FakeDwd.calls = []
-    monkeypatch.setattr(warehouse_module, "load_config", lambda **_: _config())
+    monkeypatch.setattr(warehouse_module, "load_cli_config", lambda **_: _config())
     monkeypatch.setattr(warehouse_module, "DwdService", _FakeDwd)
     return warehouse_module
 
@@ -575,7 +611,7 @@ def test_start_all_runs_the_api_and_supervises_the_consumer(monkeypatch) -> None
     def serve_all(**kwargs: object) -> None:
         seen.update(kwargs)
 
-    monkeypatch.setattr(serve_module, "load_config", lambda **_: _config())
+    monkeypatch.setattr(serve_module, "load_cli_config", lambda **_: _config())
     monkeypatch.setattr(serve_module, "_serve_all", serve_all)
 
     result = _invoke("start-all")
@@ -589,7 +625,7 @@ def test_start_all_runs_the_api_and_supervises_the_consumer(monkeypatch) -> None
 def test_start_all_rejects_an_unknown_consumer(monkeypatch) -> None:
     from financecoffer.cli.commands import serve as serve_module
 
-    monkeypatch.setattr(serve_module, "load_config", lambda **_: _config())
+    monkeypatch.setattr(serve_module, "load_cli_config", lambda **_: _config())
 
     result = _invoke("start-all", "--consumer", "bogus")
 
@@ -700,7 +736,7 @@ def test_tool_call_dispatches_with_the_mcp_signature(monkeypatch) -> None:
             calls.append(("structured", symbol, kwargs))
             return _Result({"symbol": symbol, "years": [2025], "revenue": "1.0"})
 
-    monkeypatch.setattr(tool_module, "load_config", lambda **_: _config())
+    monkeypatch.setattr(tool_module, "load_cli_config", lambda **_: _config())
     monkeypatch.setattr(tool_module, "QueryService", _Service)
 
     result = _invoke(
@@ -799,7 +835,7 @@ def test_ingest_backfill_dry_run_filters_local_events(tmp_path, monkeypatch) -> 
     from financecoffer.cli.commands import ingest as ingest_module
 
     (tmp_path / "event.json").write_text(json.dumps(_event_payload()), encoding="utf-8")
-    monkeypatch.setattr(ingest_module, "load_config", lambda **_: _config())
+    monkeypatch.setattr(ingest_module, "load_cli_config", lambda **_: _config())
 
     result = _invoke(
         "ingest",
@@ -834,7 +870,7 @@ def test_ingest_backfill_writes_through_the_event_log(tmp_path, monkeypatch) -> 
         persisted.append({"event_id": validated.event_id, "source": source})
         return {"duplicate": False, "event_id": validated.event_id}
 
-    monkeypatch.setattr(ingest_module, "load_config", lambda **_: _config())
+    monkeypatch.setattr(ingest_module, "load_cli_config", lambda **_: _config())
     monkeypatch.setattr(ingest_module, "_persist", persist)
 
     result = _invoke(

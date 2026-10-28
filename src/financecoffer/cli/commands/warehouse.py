@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from financecoffer.cli.options import GlobalOptions, from_context
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
-from financecoffer.config.loader import load_config
+from financecoffer.config.loader import load_cli_config
 from financecoffer.core.envelope import Meta
 from financecoffer.core.errors import (
     FinanceCofferError,
@@ -25,7 +25,7 @@ from financecoffer.dws import DEFAULT_FISCAL_YEARS, MAX_FISCAL_YEARS, DwsService
 
 def _dwd_service(options: GlobalOptions) -> DwdService:
     try:
-        config = load_config(overrides={"db_url": options.db_url})
+        config = load_cli_config(db_url=options.db_url)
     except FinanceCofferError as exc:
         emit_failure(options, exc)
     return DwdService(config=config, dsn=options.db_url, timeout=options.timeout)
@@ -158,7 +158,7 @@ def _register_dwd(app: typer.Typer) -> None:
 
 def _service(options: GlobalOptions) -> DwsService:
     try:
-        config = load_config(overrides={"db_url": options.db_url})
+        config = load_cli_config(db_url=options.db_url)
     except FinanceCofferError as exc:
         emit_failure(options, exc)
     return DwsService(config=config, dsn=options.db_url, timeout=options.timeout)

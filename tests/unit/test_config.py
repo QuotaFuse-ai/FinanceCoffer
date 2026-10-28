@@ -1,8 +1,17 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from financecoffer.config import ENV_PREFIX, Config, env_var_name, load_config
+from financecoffer.config import (
+    ENV_PREFIX,
+    Config,
+    default_env_file,
+    env_var_name,
+    load_cli_config,
+    load_config,
+    loader,
+)
 from financecoffer.core.errors import ConfigError
 
 
@@ -138,5 +147,55 @@ def test_secrets_are_masked_and_url_credentials_redacted() -> None:
 def test_config_is_immutable() -> None:
     config = Config()
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         config.log_level = "DEBUG"  # type: ignore[misc]
+
+
+# -- CLI config: the repo ``.env`` participates ----------------------------
+
+
+def test_default_env_file_is_none_when_absent(tmp_path: Path) -> None:
+    assert default_env_file(tmp_path / "missing.env") is None
+
+
+def test_default_env_file_returns_the_path_when_present(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("FC_LOG_LEVEL=DEBUG\n", encoding="utf-8")
+
+    assert default_env_file(env_file) == env_file
+
+
+def test_load_cli_config_reads_the_discovered_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("FC_LOG_LEVEL=DEBUG\n", encoding="utf-8")
+    monkeypatch.setattr(loader, "default_env_file", lambda *_args, **_kwargs: env_file)
+    monkeypatch.delenv("FC_LOG_LEVEL", raising=False)
+
+    assert load_cli_config().log_level == "DEBUG"
+
+
+def test_load_cli_config_lets_db_url_win_over_the_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("FC_DB_URL=postgresql://from:env@127.0.0.1:5432/env\n", encoding="utf-8")
+    monkeypatch.setattr(loader, "default_env_file", lambda *_args, **_kwargs: env_file)
+    monkeypatch.delenv("FC_DB_URL", raising=False)
+
+    config = load_cli_config(db_url="postgresql://from:flag@127.0.0.1:5432/flag")
+
+    assert config.db_url == "postgresql://from:flag@127.0.0.1:5432/flag"
+
+
+def test_load_cli_config_does_not_mask_a_malformed_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("FC_LOG_LEVEL=LOUD\n", encoding="utf-8")
+    monkeypatch.setattr(loader, "default_env_file", lambda *_args, **_kwargs: env_file)
+    monkeypatch.delenv("FC_LOG_LEVEL", raising=False)
+
+    with pytest.raises(ConfigError):
+        load_cli_config()

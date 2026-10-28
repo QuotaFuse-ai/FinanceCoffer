@@ -31,7 +31,7 @@ from financecoffer.cli.commands.monitor import HEALTH_CHECKS, health_probes
 from financecoffer.cli.options import from_context
 from financecoffer.cli.output import emit_failure
 from financecoffer.cli.placeholder import add_group
-from financecoffer.config.loader import load_config
+from financecoffer.config.loader import load_cli_config
 from financecoffer.core.config import Config
 from financecoffer.core.errors import (
     ConfigError,
@@ -41,7 +41,7 @@ from financecoffer.core.errors import (
 )
 from financecoffer.core.logging import get_logger
 from financecoffer.core.redaction import redact_text
-from financecoffer.db.connection import connect, resolve_dsn
+from financecoffer.db.connection import connect, resolve_cli_dsn
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _CONSUMERS: tuple[str, ...] = ("redis", "kafka", "webhook")
@@ -83,7 +83,7 @@ def _warehouse_summary(dsn: str | None, timeout: int) -> dict[str, Any]:
         reason = "FC_DB_URL is not configured"
         return {"dlq": _unavailable(reason), "archive": _unavailable(reason)}
     try:
-        resolved = resolve_dsn(dsn)
+        resolved = resolve_cli_dsn(dsn)
         with connect(resolved, timeout=timeout) as conn, conn.cursor() as cur:
             cur.execute("SELECT status, count(*) FROM ops.etl_dlq GROUP BY status")
             dlq = {str(status): int(count) for status, count in cur.fetchall()}
@@ -365,7 +365,7 @@ def register(app: typer.Typer) -> None:
         options = from_context(ctx)
         _reject_non_loopback(options, host)
         try:
-            config = load_config(overrides={"db_url": options.db_url})
+            config = load_cli_config(db_url=options.db_url)
         except FinanceCofferError as exc:
             emit_failure(options, exc)
 
@@ -410,7 +410,7 @@ def register(app: typer.Typer) -> None:
         options = from_context(ctx)
         _reject_non_loopback(options, host)
         try:
-            config = load_config(overrides={"db_url": options.db_url})
+            config = load_cli_config(db_url=options.db_url)
             dsn = options.db_url or config.db_url
             admin_app = build_admin_app(
                 lambda: admin_snapshot(config, dsn=dsn, timeout=options.timeout)
@@ -455,7 +455,7 @@ def register(app: typer.Typer) -> None:
                 ),
             )
         try:
-            config = load_config(overrides={"db_url": options.db_url})
+            config = load_cli_config(db_url=options.db_url)
         except FinanceCofferError as exc:
             emit_failure(options, exc)
         if config.db_url is None and options.db_url is None:

@@ -73,7 +73,7 @@ fcoffer serve api --port 8100    # REST API：/health /metrics /v1/*
 python -m pytest                 # 单元 + 集成测试
 ```
 
-配置按 **内置默认值 → `.env` → 进程环境变量 → 显式参数** 的优先级加载，只读取 `FC_*` 变量，模板见 [`.env.example`](.env.example)。密钥字段使用 `SecretStr`，日志与 `fcoffer config show` 会脱敏连接串口令。
+配置按 **内置默认值 → `.env` → 进程环境变量 → 显式参数** 的优先级加载，只读取 `FC_*` 变量，模板见 [`.env.example`](.env.example)。`.env` 按**当前工作目录**查找，因此请在仓库根目录执行 `fcoffer`；文件不存在时静默回退到进程环境变量（CI、容器和全新克隆即是这种情况）。密钥字段使用 `SecretStr`，日志与 `fcoffer config show` 会脱敏连接串口令。
 
 语义检索需要一个 OpenAI 兼容的 embedding 服务。仓库自带本地 bge-m3 启动脚本（`scripts/embedding_server.py` + `scripts/start-embedding.cmd`），默认监听 `127.0.0.1:8001`，通过 `FC_EMBEDDING_URL` 指过去即可。模型维度由 `FC_EMBEDDING_DIM` 固定为 1024（见 [DEC-0005](docs/decisions/DEC-0005-embedding-bge-m3-1024.md)）。
 

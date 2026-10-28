@@ -17,7 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from financecoffer.cli.options import GlobalOptions, from_context
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
-from financecoffer.config.loader import load_config
+from financecoffer.config.loader import load_cli_config
 from financecoffer.core.envelope import Meta
 from financecoffer.core.errors import (
     FinanceCofferError,
@@ -41,7 +41,7 @@ def _service(
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> VectorService:
     try:
-        config = load_config(overrides={"db_url": options.db_url})
+        config = load_cli_config(db_url=options.db_url)
     except FinanceCofferError as exc:
         emit_failure(options, exc)
     return VectorService(

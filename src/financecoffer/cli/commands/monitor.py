@@ -25,7 +25,7 @@ from financecoffer.cli.commands.bootstrap import (
 )
 from financecoffer.cli.options import OUTPUT_FORMATS, from_context
 from financecoffer.cli.output import emit_failure, emit_success
-from financecoffer.config.loader import load_config
+from financecoffer.config.loader import load_cli_config
 from financecoffer.core.envelope import Meta
 from financecoffer.core.errors import (
     DependencyError,
@@ -303,7 +303,7 @@ def register(app: typer.Typer) -> None:
             if output is not None:
                 _choice(output, OUTPUT_FORMATS, "--output")
             names = _parse_checks(check, order=HEALTH_CHECKS)
-            config = load_config(overrides={"db_url": options.db_url})
+            config = load_cli_config(db_url=options.db_url)
             context = ProbeContext(
                 config=config,
                 dsn=options.db_url or config.db_url,
