@@ -136,14 +136,20 @@ def register(app: typer.Typer) -> None:
             emit_failure(options, exc)
         emit_success(options, data, meta=_meta())
 
-    @ods.command("replay", help="Re-deliver records to the downstream consumer.")
+    @ods.command(
+        "replay",
+        help=(
+            "Reset the event log of stored ODS records (no re-publish to the stream;"
+            " re-publish upstream, then consume with --force)."
+        ),
+    )
     def replay(
         ctx: typer.Context,
         record_id: int | None = typer.Argument(None, metavar="ID", help="ODS record id."),
         all_failed: bool = typer.Option(
             False,
             "--all-failed",
-            help="Re-deliver every record whose event failed or was dead-lettered.",
+            help="Reset every record whose event failed or was dead-lettered.",
         ),
         dry_run: bool = typer.Option(
             False, "--dry-run", help="Only print the manifest; change nothing."

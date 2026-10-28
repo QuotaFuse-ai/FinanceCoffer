@@ -267,6 +267,20 @@ def test_structured_filters_and_projects_a_metric() -> None:
     ]
 
 
+def test_structured_metric_series_reports_a_missing_metric_as_zero() -> None:
+    # B3-07: a fiscal year that carries no value for the requested metric must
+    # still appear in the series, as 0 rather than null.
+    metrics = [{"year": 2023, "roe": 23.0}, {"year": 2024}]
+    service, _ = _service([_structured_row(metrics)], STRUCTURED_COLUMNS)
+
+    result = service.structured("600000", metric="ROE", year_range="2023-2024")
+
+    assert result.data["series"] == [
+        {"year": "2023", "value": 23.0},
+        {"year": "2024", "value": 0},
+    ]
+
+
 def test_structured_enabled_selects_and_returns_the_mark() -> None:
     columns = STRUCTURED_COLUMNS + ["compliance_tier", "commercial_use"]
     row = _structured_row([], compliance_tier="C", commercial_use=False)

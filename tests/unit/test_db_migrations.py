@@ -1,10 +1,23 @@
+import hashlib
 import re
+from datetime import datetime
 
 import pytest
 
 from financecoffer.core.errors import ConfigError, InvalidArgumentError, StorageError
-from financecoffer.db.connection import describe_dsn, normalize_dsn, resolve_dsn
-from financecoffer.db.migrations import MIGRATIONS_DIR, discover_migrations, render_sql
+from financecoffer.db.connection import (
+    describe_dsn,
+    normalize_dsn,
+    resolve_dsn,
+    validate_dsn,
+)
+from financecoffer.db.migrations import (
+    MIGRATIONS_DIR,
+    AppliedMigration,
+    MigrationRunner,
+    discover_migrations,
+    render_sql,
+)
 from financecoffer.db.partitions import parse_month, partition_name
 
 
@@ -57,6 +70,40 @@ def test_checksum_ignores_line_endings_but_keeps_the_raw_one(tmp_path) -> None:
     assert lf.raw_checksum in crlf.accepted_checksums
 
 
+def _applied(version: int, name: str, checksum: str) -> AppliedMigration:
+    return AppliedMigration(
+        version=version,
+        name=name,
+        checksum=checksum,
+        applied_at=datetime(2026, 1, 1, 0, 0),
+        duration_ms=1,
+    )
+
+
+def test_verify_accepts_a_crlf_ledger_against_an_lf_file(tmp_path) -> None:
+    # QA-A-02: a ledger written from a CRLF checkout must verify against the
+    # same migration read from an LF checkout, and vice versa.
+    (tmp_path / "0001_one.sql").write_bytes(b"SELECT 1;\n")
+    lf = discover_migrations(tmp_path)[0]
+    (tmp_path / "0001_one.sql").write_bytes(b"SELECT 1;\r\n")
+    crlf = discover_migrations(tmp_path)[0]
+
+    runner = MigrationRunner("postgresql://user:secret@db.local:5432/warehouse")
+    runner._verify((lf,), {1: _applied(1, "one", crlf.raw_checksum)})
+    runner._verify((crlf,), {1: _applied(1, "one", lf.raw_checksum)})
+
+
+def test_verify_still_rejects_a_genuinely_edited_migration(tmp_path) -> None:
+    (tmp_path / "0001_one.sql").write_bytes(b"SELECT 1;\n")
+    edited = discover_migrations(tmp_path)[0]
+    stale = _applied(1, "one", hashlib.sha256(b"SELECT 2;\n").hexdigest())
+
+    runner = MigrationRunner("postgresql://user:secret@db.local:5432/warehouse")
+
+    with pytest.raises(StorageError, match="checksum differs"):
+        runner._verify((edited,), {1: stale})
+
+
 def test_duplicate_versions_are_rejected(tmp_path) -> None:
     (tmp_path / "0001_one.sql").write_text("SELECT 1;\n", encoding="utf-8")
     (tmp_path / "0001_two.sql").write_text("SELECT 2;\n", encoding="utf-8")
@@ -100,6 +147,27 @@ def test_resolve_dsn_prefers_override_and_normalizes_driver() -> None:
 
     assert dsn == "postgresql://user:secret@db.local:5433/warehouse"
     assert normalize_dsn(dsn) == dsn
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "not-a-url",
+        "mysql://user:secret@host:3306/db",
+        "postgresql://user:secret@host:5432",
+        "postgresql://user:secret@host:abc/db",
+    ],
+)
+def test_validate_dsn_rejects_malformed_urls_as_config_errors(value: str) -> None:
+    with pytest.raises(ConfigError, match="database URL"):
+        validate_dsn(value)
+
+
+def test_validate_dsn_normalizes_a_driver_url() -> None:
+    assert (
+        validate_dsn("postgresql+psycopg://user:secret@host:5433/db")
+        == "postgresql://user:secret@host:5433/db"
+    )
 
 
 def test_describe_dsn_never_includes_the_password() -> None:

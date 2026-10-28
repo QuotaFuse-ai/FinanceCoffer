@@ -9,6 +9,7 @@ from financecoffer.db.connection import (
     describe_dsn,
     normalize_dsn,
     resolve_dsn,
+    validate_dsn,
 )
 from financecoffer.db.migrations import (
     MIGRATIONS_DIR,
@@ -40,4 +41,5 @@ __all__ = [
     "normalize_dsn",
     "parse_month",
     "resolve_dsn",
+    "validate_dsn",
 ]

@@ -17,7 +17,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -25,7 +25,6 @@ from financecoffer.core.config import Config
 from financecoffer.core.errors import FinanceCofferError, InvalidArgumentError, NotFoundError
 from financecoffer.core.redaction import redact_text
 from financecoffer.db.models.dwd import StockFinancialSnapshot
-from financecoffer.db.repositories.dwd import FinancialSnapshotRepository
 from financecoffer.db.repositories.ods import RawDataRepository
 from financecoffer.db.session import Database
 from financecoffer.dwd.writer import write_event
@@ -240,9 +239,9 @@ class DwdService:
                 "report_type": resolved_type,
             }
             if version is None:
-                row = FinancialSnapshotRepository(session).latest(**key)
+                row = self._version_row(session, key)
             else:
-                row = session.get(StockFinancialSnapshot, {**key, "version": version})
+                row = self._version_row(session, key, version)
 
             if row is None:
                 raise NotFoundError(
@@ -306,7 +305,13 @@ class DwdService:
         since: str | None = None,
         dry_run: bool = False,
     ) -> dict[str, Any]:
-        """Replay ODS payloads into DWD; existing versions are never touched."""
+        """Replay ODS payloads into DWD; existing versions are never touched.
+
+        ``would_write`` counts the payloads that passed validation in either
+        mode; in a real run the writer may still skip some of them as already
+        stored, which is why ``inserted`` + ``skipped`` is the authoritative
+        outcome and ``would_write`` is an upper bound.
+        """
 
         if not from_ods:
             raise InvalidArgumentError(
@@ -355,7 +360,7 @@ class DwdService:
                             totals=totals,
                             type_counters=per_type[data_type],
                         )
-                        if outcome == "valid":
+                        if outcome in {"valid", "inserted", "skipped"}:
                             would_write += 1
                     offset += len(batch)
                     if truncated or len(batch) < BACKFILL_BATCH:
@@ -366,7 +371,7 @@ class DwdService:
             "from_ods": True,
             "symbol": canonical,
             "since": _iso(since_at),
-            "would_write": would_write if dry_run else None,
+            "would_write": would_write,
             **totals.as_dict(),
             "truncated": truncated,
             "limit": MAX_BACKFILL,
@@ -405,6 +410,20 @@ class DwdService:
                     if reason is not None:
                         issues.append({"field": field_name, "reason": reason})
 
+                # Each amount is individually optional in the event contract
+                # (a balance sheet has no revenue), but a financial snapshot
+                # with neither amount carries no key figure at all.
+                if row.amount_revenue is None and row.amount_net_profit is None:
+                    issues.append(
+                        {
+                            "field": "amount_revenue,amount_net_profit",
+                            "reason": (
+                                "missing: both amounts are NULL,"
+                                " the snapshot carries no financial figure"
+                            ),
+                        }
+                    )
+
                 raw_rows = repository.by_event_id(row.event_id, limit=1)
                 upstream = _upstream_quality(raw_rows[0].raw_json) if raw_rows else None
                 if upstream is None:
@@ -436,6 +455,7 @@ class DwdService:
                             "symbol": row.symbol,
                             "report_date": row.report_date.isoformat(),
                             "report_type": row.report_type,
+                            "statement": row.statement,
                             "version": row.version,
                             "event_id": row.event_id,
                             "issues": issues,
@@ -457,6 +477,7 @@ class DwdService:
                 "quality_status passthrough",
                 "confidence passthrough",
                 "amount fits NUMERIC(20, 4)",
+                "key amounts present (revenue or net profit)",
             ],
             "failures": failures[:MAX_REPORTED],
         }
@@ -617,25 +638,80 @@ class DwdService:
         return day, label
 
     @staticmethod
-    def _versions(session: Session, key: Mapping[str, Any]) -> list[int]:
+    def _amount_score() -> Any:
+        """Count of non-null amounts, highest first (mirrors DWS ``_amount_rank``)."""
+
+        return case((StockFinancialSnapshot.amount_revenue.is_(None), 0), else_=1) + case(
+            (StockFinancialSnapshot.amount_net_profit.is_(None), 0), else_=1
+        )
+
+    @classmethod
+    def _version_row(
+        cls,
+        session: Session,
+        key: Mapping[str, Any],
+        version: int | None = None,
+    ) -> StockFinancialSnapshot | None:
+        """Return the newest row (or one ``version``) across statement chains.
+
+        Each statement chain numbers its own versions (DEC-0019), so one version
+        number can match several statements. The winner carries more non-null
+        amounts; ties fall back to the lexicographically smallest statement.
+        """
+
+        conditions = [
+            getattr(StockFinancialSnapshot, name) == value for name, value in key.items()
+        ]
+        order: list[Any] = []
+        if version is None:
+            order.append(StockFinancialSnapshot.version.desc())
+        else:
+            conditions.append(StockFinancialSnapshot.version == version)
+        order.extend([cls._amount_score().desc(), StockFinancialSnapshot.statement])
         statement = (
-            select(StockFinancialSnapshot.version)
-            .where(*(getattr(StockFinancialSnapshot, name) == value for name, value in key.items()))
-            .order_by(StockFinancialSnapshot.version.desc())
+            select(StockFinancialSnapshot)
+            .where(*conditions)
+            .order_by(*order)
+            .limit(1)
+        )
+        return session.scalars(statement).first()
+
+    @staticmethod
+    def _versions(session: Session, key: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """List ``(statement, version)`` pairs, newest first within each chain."""
+
+        statement = (
+            select(StockFinancialSnapshot.statement, StockFinancialSnapshot.version)
+            .where(
+                *(getattr(StockFinancialSnapshot, name) == value for name, value in key.items())
+            )
+            .order_by(
+                StockFinancialSnapshot.statement,
+                StockFinancialSnapshot.version.desc(),
+            )
             .limit(MAX_VERSIONS)
         )
-        return [int(version) for version in session.scalars(statement)]
+        return [
+            {"statement": row.statement, "version": int(row.version)}
+            for row in session.execute(statement)
+        ]
 
     @staticmethod
     def _version_rows(session: Session, key: Mapping[str, Any]) -> list[dict[str, Any]]:
         statement = (
             select(StockFinancialSnapshot)
-            .where(*(getattr(StockFinancialSnapshot, name) == value for name, value in key.items()))
-            .order_by(StockFinancialSnapshot.version.desc())
+            .where(
+                *(getattr(StockFinancialSnapshot, name) == value for name, value in key.items())
+            )
+            .order_by(
+                StockFinancialSnapshot.statement,
+                StockFinancialSnapshot.version.desc(),
+            )
             .limit(MAX_VERSIONS)
         )
         return [
             {
+                "statement": row.statement,
                 "version": row.version,
                 "ingested_at": _iso(row.ingested_at),
                 "fetch_time": _iso(row.fetch_time),
@@ -652,6 +728,7 @@ class DwdService:
             "symbol": row.symbol,
             "report_date": row.report_date.isoformat(),
             "report_type": row.report_type,
+            "statement": row.statement,
             "version": row.version,
             "amount_revenue": _money(row.amount_revenue),
             "amount_net_profit": _money(row.amount_net_profit),

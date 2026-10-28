@@ -396,7 +396,7 @@ class QueryService:
         }
         if normalized_metric is not None:
             data["series"] = [
-                {"year": record.get("year"), "value": record.get(normalized_metric)}
+                {"year": record.get("year"), "value": record.get(normalized_metric) or 0}
                 for record in records
             ]
         mark = self._mark_from_row(row)

@@ -251,6 +251,18 @@ def test_db_status_hands_the_resolved_dsn_to_the_runner(monkeypatch) -> None:
     assert seen == ["postgresql://app:secret@db.local:5433/warehouse"]
 
 
+def test_db_status_rejects_a_malformed_db_url_as_config_error() -> None:
+    # QA-A-01: a bad --db-url must fail with the envelope (E_CONFIG, exit 3),
+    # never a psycopg traceback.
+    result = _invoke("--db-url", "not-a-url", "db", "status")
+
+    assert result.exit_code == 3
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "E_CONFIG"
+    assert "Traceback" not in result.stdout
+
+
 def _config(**overrides: object):
     from financecoffer.core.config import Config
 
@@ -1017,3 +1029,44 @@ def test_skill_install_requires_a_target_or_path() -> None:
 
     assert result.exit_code == 2
     assert json.loads(result.stdout)["error"]["code"] == "E_INVALID_ARGUMENT"
+
+
+def test_skill_install_rejects_a_path_that_is_not_a_directory(tmp_path) -> None:
+    # B5-N3: a regular file passed to --path crashed with a bare traceback;
+    # it must surface as the usual invalid-argument envelope.
+    target = tmp_path / "iam_a_file"
+    target.write_text("x", encoding="utf-8")
+
+    result = _invoke("skill", "install", "--path", str(target))
+
+    assert result.exit_code == 2
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "E_INVALID_ARGUMENT"
+    assert "Traceback" not in result.stdout
+
+
+def test_skill_install_maps_a_write_failure_to_config_error(tmp_path, monkeypatch) -> None:
+    from financecoffer.cli.commands import skill as skill_module
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(skill_module.shutil, "copy2", _boom)
+
+    result = _invoke("skill", "install", "--path", str(tmp_path))
+
+    assert result.exit_code == 3
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "E_CONFIG"
+    assert "Traceback" not in result.stdout
+
+
+def test_skill_install_help_documents_created_directories() -> None:
+    # B5-06: --help must say the install root is created when missing.
+    result = _invoke("skill", "install", "--help")
+
+    assert result.exit_code == 0
+    text = " ".join(result.stdout.split())
+    assert "missing directories are created automatically" in text
+    assert "created if missing" in text

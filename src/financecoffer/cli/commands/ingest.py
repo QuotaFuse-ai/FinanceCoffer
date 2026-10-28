@@ -316,7 +316,9 @@ def _backfill(
         "skipped_reasons": skipped,
         "invalid": invalid,
         "failed": failed,
-        "would_write": selected if dry_run else 0,
+        # Selected payloads that passed the window/type/symbol filters, before
+        # dedupe; ``landed`` + ``duplicates`` is the authoritative outcome.
+        "would_write": selected,
         "truncated": truncated,
         "dry_run": dry_run,
         "failures": failures,

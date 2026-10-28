@@ -34,11 +34,42 @@ def _require_db_url(config: Config) -> str:
     return normalize_dsn(config.db_url)
 
 
+def validate_dsn(dsn: str) -> str:
+    """Validate a PostgreSQL DSN early and return it normalised.
+
+    Every ``--db-url`` path funnels through here so a malformed URL fails as
+    ``E_CONFIG`` (exit 3) with the usual envelope instead of reaching psycopg
+    and surfacing a driver traceback.
+    """
+
+    text = normalize_dsn(dsn)
+    parsed = urlsplit(text)
+    hint = "pass --db-url postgresql://user:password@host:5432/database"
+    if parsed.scheme not in {"postgres", "postgresql"}:
+        raise ConfigError(
+            "database URL must use a postgresql:// DSN",
+            details={"url": redact_text(dsn.strip())[:200], "hint": hint},
+        )
+    if not parsed.path.strip("/"):
+        raise ConfigError(
+            "database URL must name a database",
+            details={"url": redact_text(dsn.strip())[:200], "hint": hint},
+        )
+    try:
+        _ = parsed.port  # accessing it raises ValueError on a non-numeric port
+    except ValueError as exc:
+        raise ConfigError(
+            "database URL has an invalid port",
+            details={"url": redact_text(dsn.strip())[:200], "hint": hint},
+        ) from exc
+    return text
+
+
 def resolve_dsn(override: str | None = None) -> str:
     """Resolve the DSN from the override or the process environment."""
 
     if override:
-        return normalize_dsn(override)
+        return validate_dsn(override)
     return _require_db_url(load_config())
 
 
@@ -51,7 +82,7 @@ def resolve_cli_dsn(override: str | None = None) -> str:
     """
 
     if override:
-        return normalize_dsn(override)
+        return validate_dsn(override)
     return _require_db_url(load_cli_config())
 
 
@@ -59,9 +90,13 @@ def describe_dsn(dsn: str) -> dict[str, Any]:
     """Return connection details safe for logs, envelopes and comments."""
 
     parsed = urlsplit(dsn)
+    try:
+        port = parsed.port or 5432
+    except ValueError:
+        port = None
     return {
         "host": parsed.hostname or "",
-        "port": parsed.port or 5432,
+        "port": port,
         "database": unquote(parsed.path.lstrip("/")),
         "user": unquote(parsed.username) if parsed.username else "",
     }

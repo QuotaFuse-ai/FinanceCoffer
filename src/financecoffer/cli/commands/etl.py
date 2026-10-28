@@ -294,7 +294,14 @@ def register(app: typer.Typer) -> None:
         )
         emit_success(options, data, meta=_META)
 
-    @etl.command("replay", help="Re-deliver stored ODS records to the downstream consumer.")
+    @etl.command(
+        "replay",
+        help=(
+            "Reset the etl event log of stored ODS records. It does not re-publish"
+            " them to the stream: a later redelivery of the same event is accepted"
+            " instead of skipped, so re-publish upstream and consume with --force."
+        ),
+    )
     def replay(
         ctx: typer.Context,
         from_ods: bool = typer.Option(

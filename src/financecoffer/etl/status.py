@@ -28,7 +28,15 @@ def collect_status(
     config: Config,
     consumer_name: str | None = None,
 ) -> dict[str, Any]:
-    """Build the ``etl status`` payload."""
+    """Build the ``etl status`` payload.
+
+    The ``except Exception`` blocks below degrade a broken Redis or PostgreSQL
+    into an ``errors`` entry so a status report still renders. They are reached
+    through this service call (see ``tests/unit/test_etl.py::
+    test_status_survives_redis_and_database_outages``); the ``etl status`` CLI
+    command fails fast before this point because ``create_client()`` pings
+    Redis and raises ``E_DEPENDENCY`` when it is down.
+    """
 
     stream = config.event_stream
     group = config.event_group

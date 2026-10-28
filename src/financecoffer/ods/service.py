@@ -1,10 +1,11 @@
 """Read and replay operations over the immutable ODS layer.
 
-``list`` / ``show`` / ``stats`` are reads. ``replay`` is a re-delivery, not a
-rewrite: the original ODS row is never changed; the matching
-``ops.etl_event_log`` status is reset to ``received`` so the consumer picks the
-event up again. ``--dry-run`` builds the same manifest without touching the
-event log.
+``list`` / ``show`` / ``stats`` are reads. ``replay`` is a status reset, not a
+rewrite and not a re-publish: the original ODS row is never changed; the
+matching ``ops.etl_event_log`` status is reset to ``received`` so a later
+redelivery of the same event is processed instead of skipped as ``done``. It
+does not push anything into the Redis stream. ``--dry-run`` builds the same
+manifest without touching the event log.
 
 Time filters accept ``YYYY-MM-DD`` (UTC midnight; a date-only ``--until`` means
 the whole day is included) or an RFC 3339 timestamp that must carry a timezone.
@@ -171,7 +172,7 @@ def _detail(row: StockRawData, *, compliance_enabled: bool) -> dict[str, Any]:
 
 
 def _manifest(row: StockRawData) -> dict[str, Any]:
-    """The re-delivery manifest entry printed by ``ods replay --dry-run``."""
+    """The replay manifest entry printed by ``ods replay --dry-run``."""
 
     return {
         "id": row.id,
@@ -186,7 +187,7 @@ def _manifest(row: StockRawData) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class OdsService:
-    """Facade over ODS reads and event-log re-delivery."""
+    """Facade over ODS reads and event-log status resets."""
 
     config: Config
     dsn: str | None = None

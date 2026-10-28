@@ -1,8 +1,9 @@
 """ODS raw layer: append-only landing plus read/replay operations.
 
 ``landing`` is the write path shared by ``fcoffer ingest event``; ``service`` is
-the read path behind ``fcoffer ods list|show|stats|replay``. Replay re-delivers
-through ``ops.etl_event_log`` and never rewrites an ODS row.
+the read path behind ``fcoffer ods list|show|stats|replay``. Replay resets
+``ops.etl_event_log`` for stored records and never rewrites an ODS row; it does
+not re-publish to the Redis stream.
 """
 
 from __future__ import annotations

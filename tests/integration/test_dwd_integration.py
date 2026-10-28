@@ -453,3 +453,199 @@ def test_cli_ingest_reports_the_dwd_row(
     assert second_data["duplicate"] is True
     assert second_data["dwd"] is None
     assert count(db, StockQuoteSnapshot, StockQuoteSnapshot.symbol == SYMBOL) == 1
+
+
+# -- historical reads, deterministic version pick, verify (QUOT-117) ---------
+
+
+def _show(db: Database, *extra: str):
+    return runner.invoke(
+        app,
+        ["--db-url", db.dsn, "dwd", "show", "--symbol", SYMBOL, *extra],
+    )
+
+
+def _financial_with_statement(
+    *, report_date: str = "2026-09-30", statement: str, **kwargs: Any
+) -> dict[str, Any]:
+    content = financial(report_date=report_date, **kwargs)
+    content["structured_fields"]["statement"] = statement
+    return content
+
+
+def test_cli_dwd_show_reads_a_historical_version(db: Database) -> None:
+    # B1-04: an incomplete primary key made the version lookup blow up as
+    # E_STORAGE; a full-PK query must return the older snapshot instead.
+    submit(
+        db,
+        payload("financial", biz_key="history-v1", content=financial(revenue="100.0000")),
+    )
+    submit(
+        db,
+        payload("financial", biz_key="history-v2", content=financial(revenue="200.0000")),
+    )
+
+    result = _show(
+        db, "--report-date", "2026-09-30", "--report-type", "Q3", "--version", "1"
+    )
+
+    assert result.exit_code == 0, result.stdout
+    data = json.loads(result.stdout)["data"]
+    assert data["version"] == 1
+    assert data["amount_revenue"] == "100.0000"
+    assert data["statement"] == ""
+    assert data["available_versions"] == [
+        {"statement": "", "version": 2},
+        {"statement": "", "version": 1},
+    ]
+
+
+def test_cli_dwd_show_missing_version_reports_available_ones(db: Database) -> None:
+    submit(db, payload("financial", biz_key="missing-v1", content=financial()))
+
+    result = _show(
+        db, "--report-date", "2026-09-30", "--report-type", "Q3", "--version", "9"
+    )
+
+    assert result.exit_code == 1
+    envelope = json.loads(result.stdout)
+    assert envelope["error"]["code"] == "E_NOT_FOUND"
+    assert envelope["error"]["details"]["available_versions"] == [
+        {"statement": "", "version": 1}
+    ]
+
+
+def test_cli_dwd_show_prefers_the_statement_with_more_amounts(db: Database) -> None:
+    thin = _financial_with_statement(
+        report_date="2026-06-30", statement="", revenue="300.0000", profit=None
+    )
+    rich = _financial_with_statement(
+        report_date="2026-06-30",
+        statement="consolidated",
+        revenue="100.0000",
+        profit="10.0000",
+    )
+    submit(db, payload("financial", biz_key="amounts-thin", content=thin))
+    submit(db, payload("financial", biz_key="amounts-rich", content=rich))
+
+    result = _show(
+        db, "--report-date", "2026-06-30", "--report-type", "Q3", "--version", "1"
+    )
+
+    assert result.exit_code == 0, result.stdout
+    data = json.loads(result.stdout)["data"]
+    assert data["statement"] == "consolidated"
+    assert data["amount_revenue"] == "100.0000"
+
+
+def test_cli_dwd_show_breaks_an_amount_tie_by_statement(db: Database) -> None:
+    submit(
+        db,
+        payload(
+            "financial",
+            biz_key="tie-plain",
+            content=_financial_with_statement(report_date="2026-03-31", statement=""),
+        ),
+    )
+    submit(
+        db,
+        payload(
+            "financial",
+            biz_key="tie-consolidated",
+            content=_financial_with_statement(
+                report_date="2026-03-31", statement="consolidated"
+            ),
+        ),
+    )
+
+    result = _show(
+        db, "--report-date", "2026-03-31", "--report-type", "Q3", "--version", "1"
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert json.loads(result.stdout)["data"]["statement"] == ""
+
+
+def test_cli_dwd_versions_lists_statement_and_version(db: Database) -> None:
+    submit(
+        db,
+        payload(
+            "financial",
+            biz_key="versions-plain",
+            content=_financial_with_statement(report_date="2026-01-31", statement=""),
+        ),
+    )
+    submit(
+        db,
+        payload(
+            "financial",
+            biz_key="versions-consolidated",
+            content=_financial_with_statement(
+                report_date="2026-01-31", statement="consolidated"
+            ),
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "--db-url",
+            db.dsn,
+            "dwd",
+            "versions",
+            "--symbol",
+            SYMBOL,
+            "--report-date",
+            "2026-01-31",
+            "--report-type",
+            "Q3",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    versions = json.loads(result.stdout)["data"]["versions"]
+    assert [(item["statement"], item["version"]) for item in versions] == [
+        ("", 1),
+        ("consolidated", 1),
+    ]
+
+
+def test_cli_dwd_verify_flags_a_snapshot_without_any_amount(db: Database) -> None:
+    # B1-14: each amount is optional, but a snapshot with neither carries no
+    # key figure; verify must report it instead of silently passing.
+    submit(
+        db,
+        payload(
+            "financial",
+            biz_key="verify-present",
+            content=financial(report_date="2026-02-28"),
+        ),
+    )
+    submit(
+        db,
+        payload(
+            "financial",
+            biz_key="verify-empty",
+            content=financial(report_date="2026-02-28", revenue=None, profit=None),
+        ),
+    )
+
+    result = runner.invoke(
+        app, ["--db-url", db.dsn, "dwd", "verify", "--symbol", SYMBOL]
+    )
+
+    assert result.exit_code == 8, result.stdout
+    envelope = json.loads(result.stdout)
+    assert envelope["error"]["code"] == "E_PARTIAL_FAILURE"
+    details = envelope["error"]["details"]
+    assert details["checked"] == 2
+    assert details["failed"] == 1
+    assert details["failures"][0]["issues"] == [
+        {
+            "field": "amount_revenue,amount_net_profit",
+            "reason": (
+                "missing: both amounts are NULL,"
+                " the snapshot carries no financial figure"
+            ),
+        }
+    ]

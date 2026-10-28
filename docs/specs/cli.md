@@ -181,7 +181,7 @@ fcoffer dwd backfill --from-ods [--symbol S] [--since T] [--dry-run]
 fcoffer dwd verify [--symbol S] [--report-date D]
 ```
 
-- `dwd show` 默认返回 `MAX(version)`；`--version` 可查看历史快照。
+- `dwd show` 默认返回 `MAX(version)`；`--version` 可查看历史快照，若同一个版本号在多张 statement 上都存在，按「金额非空多者优先、statement 升序」取一条，`available_versions` 与 `dwd versions` 均按 `(statement, version)` 列出。
 - `dwd verify` 输出 `quality_status` / `confidence` / 金额精度检查结果，不重做勾稽。
 - 公告：`fcoffer dwd announcement list|show` 可查看 `minio_url`、`content_hash`、版本。
 

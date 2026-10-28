@@ -1,9 +1,17 @@
-"""``etl replay --from-ods``: requeue stored ODS records for re-delivery.
+"""``etl replay --from-ods``: reset the event log for stored ODS records.
 
-Replay never rewrites ODS. It selects raw rows with the requested filters and
-resets the matching ``ops.etl_event_log`` rows to ``received``; the raw payload
-stays exactly where it was so ``ods show --raw`` keeps returning the bytes
-upstream sent.
+Replay never rewrites ODS and never re-publishes anything to the Redis stream.
+It selects raw rows with the requested filters and resets the matching
+``ops.etl_event_log`` rows to ``received``; the raw payload stays exactly where
+it was so ``ods show --raw`` keeps returning the bytes upstream sent.
+
+Semantics (B3-13, option B): ``received`` is a bookkeeping state, not a
+delivery. The consumer only reads the stream and its pending list, so a replay
+does not by itself hand the rows to the consumer again. What it does is make a
+later re-publish of the same ``event_id`` re-processable: the event log no
+longer reports ``done``, so a redelivery is accepted (``etl consume --force``)
+instead of being skipped as a duplicate. Until that redelivery happens,
+``fc_etl_consume_lag_seconds`` keeps reporting these rows as queued.
 
 Rows are selected newest-first by the ODS index and then reversed, so the
 manifest and the requeue order follow upstream ``fetch_time`` order.
@@ -31,7 +39,7 @@ def replay_from_ods(
     dry_run: bool = False,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    """Re-deliver ODS rows matching the filters; ``dry_run`` writes nothing."""
+    """Reset the event-log status of matching ODS rows; ``dry_run`` writes nothing."""
 
     normalized_type = normalize_data_type(data_type)
     start = parse_instant(since, field_name="since")

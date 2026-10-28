@@ -68,9 +68,24 @@ class Migration:
 
     @property
     def accepted_checksums(self) -> set[str]:
-        """Checksums the ledger may legitimately hold for this file."""
+        """Checksums the ledger may legitimately hold for this file.
 
-        return {self.checksum, self.raw_checksum} - {""}
+        A ledger written from a CRLF checkout stores the digest of the CRLF
+        bytes, while an LF checkout stores the digest of the LF bytes. Both are
+        the same migration, so both digests verify; a genuinely edited file
+        matches neither. The ledger value is a digest, so it cannot be
+        normalised after the fact -- the equivalent is accepting the digest of
+        the other line-ending form of the current content.
+        """
+
+        return {self.checksum, self.raw_checksum, self.crlf_checksum} - {""}
+
+    @property
+    def crlf_checksum(self) -> str:
+        """sha256 of this file's content with CRLF line endings."""
+
+        normalised = self.sql.replace("\r\n", "\n").replace("\n", "\r\n")
+        return hashlib.sha256(normalised.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

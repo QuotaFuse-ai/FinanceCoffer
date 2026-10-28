@@ -17,7 +17,13 @@ import typer
 from financecoffer.cli.options import from_context
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
-from financecoffer.core.errors import DependencyError, FinanceCofferError, InvalidArgumentError
+from financecoffer.core.errors import (
+    ConfigError,
+    DependencyError,
+    FinanceCofferError,
+    InvalidArgumentError,
+)
+from financecoffer.core.redaction import redact_text
 
 SKILL_NAME = "financecoffer"
 TARGET_ROOTS: dict[str, str] = {
@@ -48,7 +54,19 @@ def _files(source: Path) -> list[Path]:
 
 def _root(target: str | None, path: str | None) -> Path:
     if path is not None:
-        return Path(path).expanduser()
+        cleaned = path.strip()
+        if not cleaned:
+            raise InvalidArgumentError(
+                "--path must not be empty",
+                details={"field": "path", "hint": "pass a directory"},
+            )
+        root = Path(cleaned).expanduser()
+        if root.exists() and not root.is_dir():
+            raise InvalidArgumentError(
+                "--path must be a directory; the Skill is copied into DIR/" + SKILL_NAME,
+                details={"field": "path", "path": str(root)},
+            )
+        return root
     if target is None:
         raise InvalidArgumentError(
             "either --target or --path is required",
@@ -63,6 +81,11 @@ def _root(target: str | None, path: str | None) -> Path:
 
 
 def _install(source: Path, destination: Path, *, force: bool) -> dict[str, Any]:
+    if destination.exists() and not destination.is_dir():
+        raise InvalidArgumentError(
+            "the destination exists and is not a directory",
+            details={"path": str(destination), "field": "path"},
+        )
     if destination.exists() and not force:
         raise InvalidArgumentError(
             "the Skill is already installed; pass --force to overwrite it",
@@ -71,14 +94,26 @@ def _install(source: Path, destination: Path, *, force: bool) -> dict[str, Any]:
 
     installed: list[str] = []
     overwritten = 0
-    for path in _files(source):
-        relative = path.relative_to(source)
-        target = destination / relative
-        if target.exists():
-            overwritten += 1
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
-        installed.append(relative.as_posix())
+    try:
+        for path in _files(source):
+            relative = path.relative_to(source)
+            target = destination / relative
+            if target.exists():
+                overwritten += 1
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+            installed.append(relative.as_posix())
+    except OSError as exc:
+        # A read-only root, a file where a directory is expected or a lost
+        # source file must surface as an envelope, never a traceback.
+        raise ConfigError(
+            "cannot write the Skill into the destination directory",
+            details={
+                "path": str(destination),
+                "error": redact_text(str(exc).strip())[:200],
+                "hint": "check that the install root is a writable directory",
+            },
+        ) from exc
 
     return {
         "path": str(destination),
@@ -92,7 +127,13 @@ def _install(source: Path, destination: Path, *, force: bool) -> dict[str, Any]:
 def register(app: typer.Typer) -> None:
     skill = add_group(app, name="skill", help_text="Install the bundled agent Skill.")
 
-    @skill.command("install", help="Copy the Skill package into an agent directory.")
+    @skill.command(
+        "install",
+        help=(
+            "Copy the Skill package into an agent directory; missing directories"
+            " are created automatically."
+        ),
+    )
     def install_command(
         ctx: typer.Context,
         target: str | None = typer.Option(
@@ -103,7 +144,10 @@ def register(app: typer.Typer) -> None:
         path: str | None = typer.Option(
             None,
             "--path",
-            help="Install root; the Skill is copied into DIR/" + SKILL_NAME + ".",
+            help=(
+                "Install root (created if missing); the Skill is copied into"
+                " DIR/" + SKILL_NAME + "."
+            ),
         ),
         force: bool = typer.Option(False, "--force", help="Overwrite an existing installation."),
     ) -> None:
