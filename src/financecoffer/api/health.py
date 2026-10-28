@@ -25,10 +25,10 @@ from financecoffer.core.config import Config
 #: most both, so a black-holed Redis is abandoned inside ~1 second.
 REDIS_OP_TIMEOUT = 0.5
 
-#: Budget for one MinIO probe. A single ``HeadBucket`` must be abandoned inside
-#: a second: a readiness endpoint that hangs on an object store is worse than
-#: one that reports the store as unreachable.
-MINIO_OP_TIMEOUT = 1.0
+#: Budget for one MinIO socket operation (connect, then read). A
+#: ``HeadBucket`` performs at most both, so a black-holed object store is
+#: abandoned inside ~1 second -- the same arithmetic as ``redis_check``.
+MINIO_OP_TIMEOUT = 0.5
 
 #: Lag, in seconds, above which an ETL backlog counts as ``degraded``. It is the
 #: threshold of the ``FinanceCofferEtlConsumeLagHigh`` alert
