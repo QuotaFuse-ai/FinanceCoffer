@@ -183,6 +183,36 @@ def test_env_example_ships_defaults_but_no_credentials() -> None:
     assert ".env" in (ROOT / ".gitignore").read_text(encoding="utf-8")
 
 
+def test_every_env_example_key_reaches_the_containers() -> None:
+    """A template key that compose never forwards is silently dead.
+
+    ``x-app-env`` is the single anchor every application service merges, so it
+    is the only place where a key added to ``.env.example`` can silently fail to
+    arrive in the containers: the operator edits ``.env``, the process keeps
+    running on the ``Config`` default, and nothing reports the mismatch. Reading
+    the per-service ``environment`` maps instead would hide exactly that case.
+    """
+
+    template_keys: set[str] = set()
+    for raw in (DEPLOY / ".env.example").read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key.startswith("FC_"):
+            template_keys.add(key)
+
+    app_env = load_compose()["x-app-env"]
+    missing = template_keys - set(app_env)
+    assert not missing, f"deploy/.env.example keys absent from x-app-env: {sorted(missing)}"
+
+    # The ETL tuning keys arrived after the first template, so env files written
+    # from the old one do not carry them: they must fall back to the Config
+    # default instead of making ``docker compose`` refuse to start.
+    for key in sorted(name for name in template_keys if name.startswith("FC_ETL_")):
+        assert ":-" in app_env[key], f"{key} must fall back to a default, not fail"
+
+
 def test_gitignore_covers_local_overrides() -> None:
     ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "*.local.cmd" in ignore

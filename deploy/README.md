@@ -24,10 +24,11 @@ postgres / redis / minio  (健康检查通过)
 
 ## 环境变量
 
-变量名与 `src/financecoffer/core/config.py` 一致，模板见 `.env.example`，全部为 `CHANGE_ME` 占位符：
+变量名与 `src/financecoffer/core/config.py` 一致，模板见 `.env.example`。模板里**只有凭据与部署身份是 `CHANGE_ME` 占位符**，其余项都带可用默认值：
 
 - Compose 专用：`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`
 - 数据库与事件：`FC_DB_URL`、`FC_REDIS_URL`、`FC_EVENT_CONSUMER`、`FC_EVENT_STREAM`、`FC_EVENT_GROUP`
+- ETL 消费调优：`FC_ETL_CONSUMER_NAME`、`FC_ETL_DLQ_STREAM`、`FC_ETL_CONTROL_KEY`、`FC_ETL_BATCH_SIZE`、`FC_ETL_BLOCK_MS`、`FC_ETL_MAX_ATTEMPTS`、`FC_ETL_BACKOFF_MS`、`FC_ETL_CLAIM_IDLE_MS`
 - 向量检索：`FC_EMBEDDING_PROVIDER`、`FC_EMBEDDING_MODEL`、`FC_EMBEDDING_DIM`、`FC_EMBEDDING_URL`、`FC_EMBEDDING_API_KEY`
 - 对象存储：`FC_MINIO_ENDPOINT`、`FC_MINIO_ACCESS_KEY`、`FC_MINIO_SECRET_KEY`、`FC_MINIO_BUCKET`
 - 运行开关：`FC_COMPLIANCE_ENABLED`、`FC_RATE_LIMIT_ENABLED`、`FC_RATE_LIMIT_PER_MINUTE`、`FC_LOG_LEVEL`、`FC_COLD_AFTER_YEARS`
@@ -36,14 +37,58 @@ postgres / redis / minio  (健康检查通过)
 约定：
 
 - 真实 `.env` 只留在本机，已被 `.gitignore` 忽略；不要提交、不要贴进日志。
-- Compose 文件中没有任何字面量密钥，全部通过 `.env` 插值；缺失变量会让 `docker compose` 直接报错。
+- Compose 文件中没有任何字面量密钥，全部通过 `.env` 插值；`compose.yaml` 里标了必填（`:?`）的项缺失会让 `docker compose` 直接报错，标了默认值（`:-`）的 ETL 调优项缺失时静默回落到默认值。
 - `fcoffer config show` 的脱敏行为不受部署脚本影响。
+
+## 照抄模板时要填哪几项
+
+`cp deploy/.env.example deploy/.env` 之后，**只改下面 9 项**，其余保持模板原样即可：
+
+| 变量 | 是什么 | 从哪来 |
+| --- | --- | --- |
+| `POSTGRES_USER` | 应用连接数据库用的角色名，Compose 用它在 `postgres` 容器里建账号 | 自定，只需符合 PostgreSQL 标识符规则 |
+| `POSTGRES_PASSWORD` | 上面这个角色的口令 | 自定，用密码管理器或 `openssl rand -base64 24` 生成 |
+| `POSTGRES_DB` | 应用数据库名 | 自定，通常取 `financecoffer`；必须与 `FC_DB_URL` 里的库名一致 |
+| `FC_DB_URL` | 应用侧 PostgreSQL DSN，内含上面那个口令 | 由前三项拼出：`postgresql+psycopg://<user>:<password>@<host>:5432/<db>`。Compose 内会用 `POSTGRES_*` 重建该 DSN，这一项只在同一份 `.env` 被容器外的命令复用时才生效 |
+| `FC_REDIS_URL` | Redis 连接串，Redis 开了 `requirepass` 时把口令写进去 | 本编排的 `redis` 服务不开认证，填 `redis://127.0.0.1:6379/1` 即可（容器内会被编排覆盖为 `redis://redis:6379/1`）；容器外复用同一份 `.env` 时按实际部署填 |
+| `FC_EMBEDDING_API_KEY` | embedding 服务的访问密钥 | `FC_EMBEDDING_PROVIDER=openai` 时由服务提供方签发；`local` 用不到，**留空** |
+| `FC_MINIO_ACCESS_KEY` | MinIO 根用户（access key） | 自定，`minio` 容器用它初始化根账号 |
+| `FC_MINIO_SECRET_KEY` | MinIO 根口令（secret key） | 自定，至少 8 位，用密码管理器生成 |
+| `FC_MCP_TOKEN` | MCP 接口的 bearer token | 自行生成，例如 `python -c "import secrets; print(secrets.token_urlsafe(32))"`；**仅回环地址部署**可留空 |
+
+其余项是可直接生效的默认值：枚举（`FC_EVENT_CONSUMER`、`FC_EMBEDDING_PROVIDER`、
+`FC_LOG_LEVEL`）、布尔（`FC_COMPLIANCE_ENABLED`、`FC_RATE_LIMIT_ENABLED`）、
+整数（`FC_ETL_*`、`FC_RATE_LIMIT_PER_MINUTE`、`FC_COLD_AFTER_YEARS`）与普通名字
+（stream/group/bucket 等）。需要调优时直接改对应项，`compose.yaml` 会把它传进容器；
+改完请重新 `up -d`（`docker compose` 不会热加载 `.env`）。
+
+### `CHANGE_ME` 与空值是两回事
+
+`FC_MCP_TOKEN`、`FC_EMBEDDING_API_KEY` 在 `compose.yaml` 里是 `${VAR:-}`（允许为空），
+模板里却是 `CHANGE_ME`，两者含义完全不同：
+
+- **空值 = 不启用。** loopback-only 部署不设 MCP token，`local` provider 不需要 API key。
+- **`CHANGE_ME` = 还没填。** 配置层会把字面量 `CHANGE_ME` 当作一个可用的密钥收下，
+  等于把一个公开仓库里人人皆知的值部署成了真实凭据。
+
+所以这两项**要么填真值，要么清空，不要留着 `CHANGE_ME`**。
+
+填完先渲染一遍再启动，确认没有残留的占位符：
+
+```sh
+docker compose --env-file deploy/.env -f deploy/compose.yaml config | grep -n 'CHANGE_ME' \
+  && echo '还有未填的项，先补齐' || echo '没有残留占位符'
+```
+
+`deploy/.env.example` 本身渲染出来会有 `CHANGE_ME`，那是正常现象——只有从模板复制出来的
+`deploy/.env` 渲染后不应再有。渲染结果里 `api`、`worker`、`migrate` 三个应用服务都应带上
+`FC_ETL_*` 等项目（缺了说明该 `.env` 是按旧模板写的，或是编排文件漏了转发）。
 
 ## 首次启动
 
 ```sh
 cp deploy/.env.example deploy/.env
-# 编辑 deploy/.env，替换所有 CHANGE_ME
+# 编辑 deploy/.env，只填 CHANGE_ME 项（见上一节「照抄模板时要填哪几项」）
 
 docker compose --env-file deploy/.env -f deploy/compose.yaml build
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d

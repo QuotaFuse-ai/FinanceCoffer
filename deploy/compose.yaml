@@ -3,8 +3,9 @@
 # migrate (one-shot) -> api/worker.
 #
 # Secrets: this file contains none. Every value is interpolated from
-# deploy/.env, which is gitignored; deploy/.env.example lists the names with
-# CHANGE_ME placeholders. Run with an explicit env file:
+# deploy/.env, which is gitignored. deploy/.env.example ships a working default
+# for every non-credential setting; only the credentials and the deployment
+# identity stay CHANGE_ME and must be filled in. Run with an explicit env file:
 #
 #   docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
 #
@@ -33,6 +34,17 @@ x-app-env: &app-env
   FC_EVENT_CONSUMER: "${FC_EVENT_CONSUMER:?set FC_EVENT_CONSUMER}"
   FC_EVENT_STREAM: "${FC_EVENT_STREAM:?set FC_EVENT_STREAM}"
   FC_EVENT_GROUP: "${FC_EVENT_GROUP:?set FC_EVENT_GROUP}"
+  # ETL consumer tuning. ``:-`` rather than ``:?`` on purpose: env files written
+  # from the previous template do not carry these keys, and a missing key must
+  # fall back to the Config default instead of refusing to start.
+  FC_ETL_CONSUMER_NAME: "${FC_ETL_CONSUMER_NAME:-}"
+  FC_ETL_DLQ_STREAM: "${FC_ETL_DLQ_STREAM:-fc:stockdata:dlq}"
+  FC_ETL_CONTROL_KEY: "${FC_ETL_CONTROL_KEY:-fc:etl:control}"
+  FC_ETL_BATCH_SIZE: "${FC_ETL_BATCH_SIZE:-50}"
+  FC_ETL_BLOCK_MS: "${FC_ETL_BLOCK_MS:-5000}"
+  FC_ETL_MAX_ATTEMPTS: "${FC_ETL_MAX_ATTEMPTS:-3}"
+  FC_ETL_BACKOFF_MS: "${FC_ETL_BACKOFF_MS:-1000}"
+  FC_ETL_CLAIM_IDLE_MS: "${FC_ETL_CLAIM_IDLE_MS:-60000}"
   FC_COMPLIANCE_ENABLED: "${FC_COMPLIANCE_ENABLED:?set FC_COMPLIANCE_ENABLED}"
   FC_RATE_LIMIT_ENABLED: "${FC_RATE_LIMIT_ENABLED:?set FC_RATE_LIMIT_ENABLED}"
   FC_RATE_LIMIT_PER_MINUTE: "${FC_RATE_LIMIT_PER_MINUTE:?set FC_RATE_LIMIT_PER_MINUTE}"
