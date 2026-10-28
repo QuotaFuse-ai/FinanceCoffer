@@ -350,6 +350,10 @@ _WRITERS: dict[EventDataType, _Handler] = {
     EventDataType.NORTHBOUND: _write_northbound,
 }
 
+#: Data types that reach a DWD table. ``heartbeat`` is deliberately absent:
+#: contract 3.8 keeps it as liveness state in ``ops.source_heartbeat``.
+WRITTEN_DATA_TYPES: frozenset[EventDataType] = frozenset(_WRITERS)
+
 
 def _outcome(model: type[Any], event: ValidatedEvent, row: Any) -> WriteOutcome:
     table = f"{model.__table__.schema}.{model.__tablename__}"
@@ -491,4 +495,4 @@ def _optional_text(value: Any, *, field_name: str) -> str | None:
     return value
 
 
-__all__ = ["WriteOutcome", "write_event"]
+__all__ = ["WRITTEN_DATA_TYPES", "WriteOutcome", "write_event"]

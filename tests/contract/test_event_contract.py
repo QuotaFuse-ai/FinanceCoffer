@@ -1,12 +1,14 @@
-"""Contract tests for ``docs/specs/event-contract.md`` (v0.3).
+"""Contract tests for ``docs/specs/event-contract.md`` (v0.5).
 
 Every example event from section 3 must validate, the three negative buckets
 (missing field / wrong type / unknown ``data_type``) must map to the documented
 error code and reason, and ``event_id`` must obey the deterministic
-``sha256(provider|data_type|symbol|biz_key)`` rule. The examples for
-``research`` / ``northbound`` / ``heartbeat`` only have envelope + content
-documented; their payload models have not landed yet, so validation must report
-``E_NOT_IMPLEMENTED`` instead of guessing (contract section 7, gap G-02).
+``sha256(provider|data_type|symbol|biz_key)`` rule. All eight documented data
+types now have payload models, so the former "pending, expect
+``E_NOT_IMPLEMENTED``" bucket is gone (gap G-02 closed); what replaces it is a
+coverage guard: every type except ``heartbeat`` must have a DWD writer, because
+``heartbeat`` is liveness state recorded in ``ops.source_heartbeat`` (contract
+section 3.8) and never reaches DWD.
 """
 
 from __future__ import annotations
@@ -17,9 +19,10 @@ from typing import Any
 
 import pytest
 
-from financecoffer.core.errors import InvalidArgumentError, NotImplementedYetError
-from financecoffer.events import EventEnvelope, compute_event_id, validate_event
-from financecoffer.events.models import MAX_EVENT_BYTES
+from financecoffer.core.errors import InvalidArgumentError
+from financecoffer.dwd.writer import WRITTEN_DATA_TYPES
+from financecoffer.events import compute_event_id, validate_event
+from financecoffer.events.models import MAX_EVENT_BYTES, EventDataType
 
 _EVENT_ID_PATTERN = re.compile(r"^evt_[0-9a-f]{32}$")
 
@@ -227,15 +230,12 @@ def _heartbeat() -> dict[str, Any]:
 SUPPORTED_EXAMPLES = {
     "announcement": (_announcement, "normal"),
     "financial": (_financial, "normal"),
+    "heartbeat": (_heartbeat, "normal"),
     "kline": (_kline, "normal"),
+    "northbound": (_northbound, "normal"),
     "quote": (_quote, "normal"),
+    "research": (_research, "normal"),
     "risk": (_risk, "suspicious"),
-}
-
-PENDING_EXAMPLES = {
-    "research": _research,
-    "northbound": _northbound,
-    "heartbeat": _heartbeat,
 }
 
 
@@ -253,24 +253,12 @@ def test_documented_examples_pass_validation(name: str) -> None:
     assert event.content.quality_metrics.quality_status.value == quality
 
 
-@pytest.mark.parametrize("name", sorted(PENDING_EXAMPLES))
-def test_pending_examples_are_envelope_valid_and_report_not_implemented(name: str) -> None:
-    payload = PENDING_EXAMPLES[name]()
+def test_every_documented_data_type_has_an_implementation() -> None:
+    """A documented ``data_type`` with no writer would be silently unsupported."""
 
-    envelope = EventEnvelope.model_validate(payload)
-    assert envelope.data_type.value == name
-    assert envelope.event_id == compute_event_id(
-        provider=envelope.source_info.provider,
-        data_type=envelope.data_type,
-        symbol=envelope.symbol,
-        biz_key=envelope.biz_key,
-    )
+    documented = frozenset(EventDataType) - {EventDataType.HEARTBEAT}
 
-    with pytest.raises(NotImplementedYetError) as raised:
-        validate_event(payload)
-
-    assert raised.value.code.value == "E_NOT_IMPLEMENTED"
-    assert raised.value.details["data_type"] == name
+    assert WRITTEN_DATA_TYPES == documented
 
 
 # -- negative cases: missing field / wrong type / unknown data_type ----------
@@ -278,7 +266,16 @@ def test_pending_examples_are_envelope_valid_and_report_not_implemented(name: st
 
 @pytest.mark.parametrize(
     "field",
-    ["schema_version", "event_id", "biz_key", "event_time", "data_type", "market", "source_info", "content"],
+    [
+        "schema_version",
+        "event_id",
+        "biz_key",
+        "event_time",
+        "data_type",
+        "market",
+        "source_info",
+        "content",
+    ],
 )
 def test_a_missing_envelope_field_is_a_schema_error(field: str) -> None:
     payload = _announcement()
