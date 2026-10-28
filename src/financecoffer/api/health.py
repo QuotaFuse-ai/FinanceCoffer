@@ -97,32 +97,35 @@ def redis_check(config: Config, *, timeout: float = REDIS_OP_TIMEOUT) -> dict[st
     never dials, so there is nothing to be unreachable.
     """
 
-    started = time.perf_counter()
-    status = OK
     try:
         import redis
         from redis.backoff import NoBackoff
         from redis.retry import Retry
     except ImportError:  # pragma: no cover - depends on install extras
-        status = NOT_CONFIGURED
-    else:
-        client: Any = None
-        try:
-            client = redis.Redis.from_url(
-                config.redis_url,
-                socket_connect_timeout=timeout,
-                socket_timeout=timeout,
-                # redis-py retries ten times by default; a readiness probe must
-                # issue exactly one PING to keep its own deadline.
-                retry=Retry(NoBackoff(), 0),
-            )
-            client.ping()
-        except Exception:  # noqa: BLE001 - redis-py raises several transport errors
-            status = UNREACHABLE
-        finally:
-            if client is not None:
-                with suppress(Exception):
-                    client.close()
+        # Nothing was dialled, so there is no measurement to report: the same
+        # rule ``database_check`` / ``embedding_check`` / ``minio_check``
+        # follow for ``not_configured`` (``docs/specs/financecoffer.md`` §6.2.1).
+        return {"status": NOT_CONFIGURED}
+
+    started = time.perf_counter()
+    status = OK
+    client: Any = None
+    try:
+        client = redis.Redis.from_url(
+            config.redis_url,
+            socket_connect_timeout=timeout,
+            socket_timeout=timeout,
+            # redis-py retries ten times by default; a readiness probe must
+            # issue exactly one PING to keep its own deadline.
+            retry=Retry(NoBackoff(), 0),
+        )
+        client.ping()
+    except Exception:  # noqa: BLE001 - redis-py raises several transport errors
+        status = UNREACHABLE
+    finally:
+        if client is not None:
+            with suppress(Exception):
+                client.close()
     return {"status": status, "elapsed_ms": _elapsed_ms(started)}
 
 

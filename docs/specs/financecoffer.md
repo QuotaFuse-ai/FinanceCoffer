@@ -1,6 +1,6 @@
 # FinanceCoffer 产品规格
 
-版本：v0.7（设计稿）
+版本：v0.8（设计稿）
 变更规则：本文件为最新版本，每次修改必须在文末「变更记录」追加一行。
 
 ## 1. 产品定位
@@ -204,7 +204,8 @@ CREATE INDEX idx_ann_chunk_embedding
     "database": {"status": "ok", "elapsed_ms": 3.41},
     "embedding": {"status": "ok", "elapsed_ms": 12.08},
     "redis": {"status": "ok", "elapsed_ms": 0.83},
-    "etl": {"status": "ok", "lag_seconds": 0.0, "pending": 0}
+    "etl": {"status": "ok", "lag_seconds": 0.0, "pending": 0},
+    "minio": {"status": "not_configured"}
   },
   "compliance_enabled": false
 }
@@ -229,9 +230,9 @@ CREATE INDEX idx_ann_chunk_embedding
 | --- | --- | --- | --- |
 | `database` | `ok` / `unreachable` / `not_configured` | `elapsed_ms`（`not_configured` 时无） | 仓库执行 `SELECT 1`；无 DSN（运行时 DSN 与 `FC_DB_URL` 都为空）→ `not_configured` |
 | `embedding` | `ok` / `unreachable` / `not_configured` | `elapsed_ms`（同上） | 请求 embedding 服务的 `GET /health`，校验 `status` 与维度；`FC_EMBEDDING_URL` 缺 scheme/host → `not_configured` |
-| `redis` | `ok` / `unreachable` / `not_configured` | `elapsed_ms` | 一次 `PING`，单次操作超时 0.5s；redis 客户端未安装（基础安装、未装 `[etl]` extra）→ `not_configured` |
+| `redis` | `ok` / `unreachable` / `not_configured` | `elapsed_ms`（客户端未安装时无） | 一次 `PING`，单次操作超时 0.5s；redis 客户端未安装（基础安装、未装 `[etl]` extra）→ `not_configured` |
 | `etl` | `ok` / `degraded` / `unreachable` | `lag_seconds`、`pending` | 一条聚合 SQL，与 §7 的 `fc_etl_consume_lag_seconds` 共用同一个定义 |
-| `minio` | `ok` / `unreachable` / `not_configured` | `elapsed_ms` | **尚未实现**：后续按本表补齐，落地前不出现在 `checks` 中 |
+| `minio` | `ok` / `unreachable` / `not_configured` | `elapsed_ms`（`not_configured` 时无） | 一次 `HeadBucket`（不 list、不上传下载），connect / read 各 0.5s、`max_attempts=0`（只发一次请求，最坏 ~1s 内返回）；`FC_MINIO_ACCESS_KEY` / `FC_MINIO_SECRET_KEY` 任一为空，或未装 `s3` extra → `not_configured`；已配置但探测抛错（连接拒绝 / 超时 / 凭据错 / bucket 缺失）→ `unreachable` |
 
 **整体判定表**（`status` 只有 `ok` / `degraded` 两档）：
 
@@ -270,7 +271,7 @@ CREATE INDEX idx_ann_chunk_embedding
 
 | 维度 | REST `GET /health` | CLI `fcoffer health` |
 | --- | --- | --- |
-| 检查项 | `database` / `embedding` / `redis` / `etl`（`minio` 待实现） | `db` / `minio` / `redis` / `etl` |
+| 检查项 | `database` / `embedding` / `redis` / `etl` / `minio` | `db` / `minio` / `redis` / `etl` |
 | `status` 词表 | `ok` / `degraded` / `unreachable` / `not_configured` | `ok` / `warn` / `fail` |
 | 单项形状 | 以名称为键的对象：`{status, elapsed_ms?, ...}` | 数组：`[{name, status, reason, details?}]` |
 | 整体 `status` | `ok` / `degraded`，只看核心依赖 | `ok` / `degraded` / `fail`；任一 `fail` → `E_DEPENDENCY`，退出码 5；只有 `warn` → `degraded`，退出码 0 |
@@ -280,7 +281,7 @@ CREATE INDEX idx_ann_chunk_embedding
 
 - CLI 的 `etl` 检查 **Redis Stream 消费组是否挂上**、有无 idle 超过 60 秒的 pending；REST 的 `etl` 读 **`ops` 表里 `received` / `processing` 状态的积压与最老等待时长**。
 - CLI 的 `db` 探针额外取 `SHOW server_version` 作为诊断信息；REST 只做 `SELECT 1`。
-- CLI 把 `minio` 纳入检查并参与退出码；REST 的 `minio` 尚未实现（见上表），落地后也只进 `checks`、不影响整体。
+- REST 与 CLI 都检查 `minio`；区别在于 REST 的 `minio` 只进 `checks`、不影响整体 `status`，CLI 的 `minio` 参与退出码。
 
 刻意不同的原因：两者读者不同。REST 由编排消费，必须保持两档、不被可选依赖左右，且异常只能体现在响应体里；CLI 是人用来问「到底哪里坏了」，需要覆盖 `minio`、用 `warn` / `fail` 分档，并用退出码把可选依赖的故障带进脚本与巡检。因此**两边的输出形状与词表互不兼容，不可互相解析**。
 
@@ -375,3 +376,4 @@ CREATE INDEX idx_ann_chunk_embedding
 | 2026-10-27 | v0.5 | 清理历史产品名与内部环境信息，文档只保留 FinanceCoffer 命名 |
 | 2026-10-29 | v0.6 | §7 改为「注册即输出」（无数据输出 0 值基线）、明确 `/metrics` 仅 Prometheus 文本格式（`Accept` 不生效，JSON 走 CLI）、归档指标统一为 `fc_archive_job_total{status}`（DEC-0022，`fc_archive_failed_total` 废弃，§4.5 同步）、`fc_pg_pool_in_use` 标注不适用（查询层 psycopg 直连，无连接池）；补登 `fc_vector_chunks_total`、`fc_vector_embeddings_total`、`fc_archive_job_total` 的 `status` 值域 |
 | 2026-10-29 | v0.7 | 新增 §6.2.1：`/health` 的 `checks` 统一为 `{status, elapsed_ms?, ...}` 对象、`status` 闭集词表（`ok`/`degraded`/`unreachable`/`not_configured`，`not_installed` 废止）、降级判定表、`etl` 以 60 秒告警阈值为积压判定（消灭 `unknown`）、REST 与 CLI `fcoffer health` 的差异及原因、每次请求两连接的已知限制；依据：客户端可消费的形状必须唯一，且就绪判定与告警不得对同一积压给出相反结论 |
+| 2026-10-29 | v0.8 | §6.2.1 的 `minio` 探针由「尚未实现」改为已落地的 `HeadBucket` 单次探测（含 `not_configured` / `unreachable` 的判定条件），REST 与 CLI 检查项清单同步；`redis` 的「客户端未安装」分支按统一形状不再给 `elapsed_ms`，自有字段列补注。依据：可选依赖的就绪语义以代码可验证的行为为准，`elapsed_ms` 只表示真正发起过的探测耗时 |

@@ -346,7 +346,9 @@ def test_health_reports_redis_as_not_configured_without_the_client(
     payload = _client(FakeService()).get("/health").json()
 
     assert payload["data"]["checks"]["redis"]["status"] == "not_configured"
-    assert isinstance(payload["data"]["checks"]["redis"]["elapsed_ms"], float)
+    # No dial, no measurement: ``not_configured`` carries no ``elapsed_ms``,
+    # the same rule the database, embedding and minio probes follow.
+    assert "elapsed_ms" not in payload["data"]["checks"]["redis"]
     # Redis never moves the aggregate, whatever it reports.
     assert payload["data"]["status"] == "ok"
 
