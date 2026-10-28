@@ -43,6 +43,20 @@ def test_checksum_is_content_addressed(tmp_path) -> None:
     assert first.checksum != second.checksum
 
 
+def test_checksum_ignores_line_endings_but_keeps_the_raw_one(tmp_path) -> None:
+    (tmp_path / "0001_one.sql").write_bytes(b"SELECT 1;\nSELECT 2;\n")
+    lf = discover_migrations(tmp_path)[0]
+    (tmp_path / "0001_one.sql").write_bytes(b"SELECT 1;\r\nSELECT 2;\r\n")
+    crlf = discover_migrations(tmp_path)[0]
+
+    # A checkout that rewrites CRLF must still verify against a ledger entry
+    # written from either form; the SQL text itself is identical.
+    assert lf.checksum == crlf.checksum
+    assert lf.raw_checksum != crlf.raw_checksum
+    assert crlf.raw_checksum in crlf.accepted_checksums
+    assert lf.raw_checksum in crlf.accepted_checksums
+
+
 def test_duplicate_versions_are_rejected(tmp_path) -> None:
     (tmp_path / "0001_one.sql").write_text("SELECT 1;\n", encoding="utf-8")
     (tmp_path / "0001_two.sql").write_text("SELECT 2;\n", encoding="utf-8")

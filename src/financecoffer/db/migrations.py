@@ -55,10 +55,22 @@ class Migration:
     name: str
     path: Path
     sql: str
+    #: sha256 of the file with line endings normalised to ``\n``. Content is
+    #: what the ledger protects; a checkout that rewrites CRLF must not look
+    #: like an edited migration.
     checksum: str
+    #: sha256 of the bytes exactly as they sit on disk. Kept so ledgers written
+    #: before normalisation (which recorded raw bytes) still verify.
+    raw_checksum: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {"version": self.version, "name": self.name, "checksum": self.checksum}
+
+    @property
+    def accepted_checksums(self) -> set[str]:
+        """Checksums the ledger may legitimately hold for this file."""
+
+        return {self.checksum, self.raw_checksum} - {""}
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,7 +172,8 @@ def discover_migrations(directory: Path | None = None) -> tuple[Migration, ...]:
                 name=match.group("name"),
                 path=path,
                 sql=raw.decode("utf-8"),
-                checksum=hashlib.sha256(raw).hexdigest(),
+                checksum=hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest(),
+                raw_checksum=hashlib.sha256(raw).hexdigest(),
             )
         )
         seen[version] = path.name
@@ -262,14 +275,15 @@ class MigrationRunner:
                 details={"versions": unknown, "hint": "deploy a newer fcoffer"},
             )
         for version, row in sorted(applied.items()):
-            if row.checksum != known[version].checksum:
+            migration = known[version]
+            if row.checksum not in migration.accepted_checksums:
                 raise StorageError(
                     "applied migration checksum differs from the file",
                     details={
                         "version": version,
-                        "name": known[version].name,
+                        "name": migration.name,
                         "expected": row.checksum,
-                        "actual": known[version].checksum,
+                        "actual": migration.checksum,
                         "hint": "never edit an applied migration; add a new one",
                     },
                 )

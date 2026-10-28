@@ -45,6 +45,10 @@ from financecoffer.db.models.dwd import (
 )
 
 DSN = "postgresql://fcoffer:fcoffer@127.0.0.1:5432/financecoffer"
+#: Nothing listens here. The stubbed service must never need a warehouse, so a
+#: connection attempt shows up in the report as ``journal_error`` instead of
+#: quietly writing into a developer's database.
+OFFLINE_DSN = "postgresql://fcoffer:fcoffer@127.0.0.1:1/financecoffer"
 SPECS = {spec.name: spec for spec in TABLES}
 
 
@@ -550,13 +554,32 @@ def test_archive_row_marks_the_row_after_the_object_is_confirmed() -> None:
 
 
 class StubService(ArchiveService):
-    """``run`` over a fixed row list, with the marker recorded instead of written."""
+    """``run`` over a fixed row list, with the marker recorded instead of written.
+
+    Failed rows are journalled in memory too: ``_record_failed_job`` is the only
+    other place ``run`` reaches the warehouse, and a unit test must not write to
+    whatever database its DSN happens to point at.
+    """
 
     def __init__(self, rows: dict[str, list[Any]], **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.rows = rows
         self.marked: list[str] = []
         self.windows: list[date] = []
+        self.journaled: list[dict[str, Any]] = []
+
+    def _record_failed_job(
+        self, spec: Any, object_key: str, symbol: str | None, reason: str
+    ) -> str | None:
+        self.journaled.append(
+            {
+                "table": spec.name,
+                "object_key": object_key,
+                "symbol": symbol,
+                "reason": reason,
+            }
+        )
+        return None
 
     def _iter_cold_rows(
         self,
@@ -576,11 +599,13 @@ class StubService(ArchiveService):
 
 def stub_service(rows: dict[str, list[Any]], *, storage: FakeStorage | None = None) -> StubService:
     store = storage if storage is not None else FakeStorage()
-    config = Config(db_url=DSN, minio_bucket="financecoffer")
+    # A port nothing listens on: if a stub ever dials the warehouse the failure
+    # surfaces as ``journal_error`` instead of landing in a real ledger.
+    config = Config(db_url=OFFLINE_DSN, minio_bucket="financecoffer")
     return StubService(
         rows,
         config=config,
-        dsn=DSN,
+        dsn=OFFLINE_DSN,
         storage=store,
         prefix="test/t012",
     )
@@ -660,4 +685,15 @@ def test_run_reports_a_broken_announcement_without_aborting_the_batch() -> None:
     assert payload["fc_archive_failed_total"] == 1
     assert payload["failures"][0]["primary_key"] == {"id": 3}
     assert payload["failures"][0]["reason"] == "content_hash does not match the stored body"
+    # The row is booked in the job ledger, but through the in-memory journal of
+    # the stub -- never through a live database connection.
+    assert "journal_error" not in payload["failures"][0]
+    assert service.journaled == [
+        {
+            "table": "stock_announcement",
+            "object_key": "test/t012/dwd/stock_announcement/600000/2019/3.txt",
+            "symbol": "600000",
+            "reason": "content_hash does not match the stored body",
+        }
+    ]
     assert service.marked == ["test/t012/dwd/stock_announcement/600000/2019/4.txt"]

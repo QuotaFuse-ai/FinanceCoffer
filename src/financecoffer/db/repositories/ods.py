@@ -9,7 +9,13 @@ from typing import Any
 from sqlalchemy import desc, func, select
 
 from financecoffer.db.models.ods import StockRawData
+from financecoffer.db.models.ops import EtlEventLog
 from financecoffer.db.repositories.base import BaseRepository
+
+#: Event-log states that mean "this raw row has not reached DWD yet". The ODS
+#: row itself is append-only, so a failure is recorded on the event log instead
+#: of being written back into ``stock_raw_data.etl_status`` (DEC-0021).
+FAILED_EVENT_STATUSES: tuple[str, ...] = ("failed", "dlq")
 
 
 class RawDataRepository(BaseRepository[StockRawData]):
@@ -71,11 +77,19 @@ class RawDataRepository(BaseRepository[StockRawData]):
         return self.session.scalars(statement).all()
 
     def failed(self, *, limit: int = 1000) -> Sequence[StockRawData]:
-        """Rows awaiting replay, oldest first so redelivery keeps upstream order."""
+        """Rows awaiting replay, oldest first so redelivery keeps upstream order.
+
+        The failure state lives on ``ops.etl_event_log``: ODS is append-only, so
+        ``etl_status`` is written once as ``pending`` and never revisited
+        (DEC-0021). Selecting on ``etl_status == 'failed'`` would therefore
+        never match a single row, which made ``ods replay --all-failed`` a
+        no-op; the join below is the real selector.
+        """
 
         statement = (
             select(self.model)
-            .where(self.model.etl_status == "failed")
+            .join(EtlEventLog, EtlEventLog.event_id == self.model.event_id)
+            .where(EtlEventLog.status.in_(FAILED_EVENT_STATUSES))
             .order_by(self.model.fetch_time, self.model.id)
             .limit(limit)
         )

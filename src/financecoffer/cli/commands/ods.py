@@ -141,7 +141,9 @@ def register(app: typer.Typer) -> None:
         ctx: typer.Context,
         record_id: int | None = typer.Argument(None, metavar="ID", help="ODS record id."),
         all_failed: bool = typer.Option(
-            False, "--all-failed", help="Re-deliver every record with etl_status=failed."
+            False,
+            "--all-failed",
+            help="Re-deliver every record whose event failed or was dead-lettered.",
         ),
         dry_run: bool = typer.Option(
             False, "--dry-run", help="Only print the manifest; change nothing."

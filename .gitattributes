@@ -1,0 +1,4 @@
+# Migration checksums are content-addressed: the ledger protects what a
+# migration says, not which line endings a checkout happened to produce.
+# Keeping the SQL files LF on every platform makes that explicit.
+*.sql text eol=lf

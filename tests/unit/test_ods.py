@@ -665,6 +665,22 @@ def test_replay_all_failed_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
     assert data["dry_run"] is True
 
 
+def test_failed_rows_come_from_the_event_log_not_etl_status() -> None:
+    """ODS is append-only, so ``etl_status`` never leaves ``pending`` (DEC-0021)."""
+
+    session = FakeSession()
+    session.respond_scalars(raw_row(id=1))
+    instance, _ = make_service(session)
+
+    instance.replay(all_failed=True, dry_run=True)
+
+    statement = session.statements[-1]
+    sql = " ".join(str(statement.compile(compile_kwargs={"literal_binds": True})).split())
+    assert "JOIN ops.etl_event_log ON ops.etl_event_log.event_id = ods.stock_raw_data.event_id" in sql
+    assert "ops.etl_event_log.status IN ('failed', 'dlq')" in sql
+    assert "ods.stock_raw_data.etl_status =" not in sql
+
+
 # -- CLI ---------------------------------------------------------------------
 
 
