@@ -5,10 +5,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import boto3
 import pytest
 import redis
 import yaml
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from financecoffer.api import create_app
 from financecoffer.api.health import ETL_LAG_DEGRADED_SECONDS, etl_check
@@ -150,6 +152,52 @@ def redis_server(monkeypatch: pytest.MonkeyPatch) -> Callable[..., _FakeRedis]:
     return use
 
 
+class _FakeS3:
+    """boto3 S3 client stand-in: answers ``HeadBucket`` without opening a socket."""
+
+    def __init__(self, *, error: BaseException | None = None) -> None:
+        self.error = error
+        self.closed = False
+        self.buckets: list[str] = []
+
+    def head_bucket(self, **kwargs: Any) -> None:
+        self.buckets.append(str(kwargs.get("Bucket")))
+        if self.error is not None:
+            raise self.error
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def minio_server(monkeypatch: pytest.MonkeyPatch) -> Callable[..., _FakeS3]:
+    """Replace ``boto3.client``; call the fixture to choose the fake's answer."""
+
+    state: dict[str, _FakeS3] = {"client": _FakeS3()}
+
+    def build(*args: Any, **kwargs: Any) -> _FakeS3:
+        return state["client"]
+
+    def use(error: BaseException | None = None) -> _FakeS3:
+        state["client"] = _FakeS3(error=error)
+        return state["client"]
+
+    monkeypatch.setattr(boto3, "client", build)
+    return use
+
+
+def _minio_config(**overrides: Any) -> Config:
+    """Config with MinIO credentials set, i.e. the object store *is* configured."""
+
+    return Config(
+        db_url=DSN,
+        minio_endpoint="127.0.0.1:9100",
+        minio_access_key=SecretStr("access"),
+        minio_secret_key=SecretStr("secret"),
+        **overrides,
+    )
+
+
 def test_health_ok_reports_envelope_and_switch_state(
     redis_server: Callable[..., _FakeRedis],
 ) -> None:
@@ -178,7 +226,7 @@ def test_health_checks_all_share_one_shape_and_vocabulary(
 
     checks = _client(FakeService()).get("/health").json()["data"]["checks"]
 
-    assert set(checks) == {"database", "embedding", "redis", "etl"}
+    assert set(checks) == {"database", "embedding", "redis", "etl", "minio"}
     for name, check in checks.items():
         assert isinstance(check, dict), name
         assert check["status"] in {"ok", "degraded", "unreachable", "not_configured"}, name
@@ -186,6 +234,8 @@ def test_health_checks_all_share_one_shape_and_vocabulary(
     for name in ("database", "embedding", "redis"):
         assert isinstance(checks[name]["elapsed_ms"], float), name
         assert checks[name]["elapsed_ms"] >= 0, name
+    # MinIO is unconfigured here, so it was never dialled and reports no timing.
+    assert checks["minio"] == {"status": "not_configured"}
 
 
 def test_health_degraded_when_database_is_unreachable(
@@ -279,7 +329,7 @@ def test_health_stays_200_and_keeps_its_shape_when_redis_is_unreachable(
     payload = response.json()
     assert payload["ok"] is True
     checks = payload["data"]["checks"]
-    assert set(checks) == {"database", "embedding", "redis", "etl"}
+    assert set(checks) == {"database", "embedding", "redis", "etl", "minio"}
     assert checks["redis"]["status"] == "unreachable"
     assert isinstance(checks["redis"]["elapsed_ms"], float)
     # The aggregate status still turns on database and embedding only.
@@ -299,6 +349,73 @@ def test_health_reports_redis_as_not_configured_without_the_client(
     assert isinstance(payload["data"]["checks"]["redis"]["elapsed_ms"], float)
     # Redis never moves the aggregate, whatever it reports.
     assert payload["data"]["status"] == "ok"
+
+
+def test_health_reports_minio_as_not_configured_and_stays_ok(
+    redis_server: Callable[..., _FakeRedis],
+    minio_server: Callable[..., _FakeS3],
+) -> None:
+    redis_server()
+    fake_s3 = minio_server()
+    service = FakeService()  # default config: no FC_MINIO_ACCESS_KEY / _SECRET_KEY
+
+    response = _client(service).get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = payload["data"]["checks"]
+    # An unconfigured optional dependency is reported, not omitted and not failed.
+    assert checks["minio"] == {"status": "not_configured"}
+    assert "elapsed_ms" not in checks["minio"]
+    # Nothing was dialled and the object store cannot degrade the process.
+    assert fake_s3.buckets == []
+    assert payload["data"]["status"] == "ok"
+
+
+def test_health_reports_minio_as_ok_when_the_bucket_answers(
+    redis_server: Callable[..., _FakeRedis],
+    minio_server: Callable[..., _FakeS3],
+) -> None:
+    redis_server()
+    fake_s3 = minio_server()
+    service = FakeService()
+    service.config = _minio_config()
+
+    response = _client(service).get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = payload["data"]["checks"]
+    assert checks["minio"]["status"] == "ok"
+    assert isinstance(checks["minio"]["elapsed_ms"], float)
+    assert checks["minio"]["elapsed_ms"] >= 0
+    # One HeadBucket on the configured bucket, and the connection is released.
+    assert fake_s3.buckets == ["financecoffer"]
+    assert fake_s3.closed is True
+    assert payload["data"]["status"] == "ok"
+
+
+def test_health_stays_200_when_a_configured_minio_fails_the_probe(
+    redis_server: Callable[..., _FakeRedis],
+    minio_server: Callable[..., _FakeS3],
+) -> None:
+    redis_server()
+    fake_s3 = minio_server(ConnectionError("connection refused"))
+    service = FakeService()
+    service.config = _minio_config()
+
+    response = _client(service).get("/health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = payload["data"]["checks"]
+    assert checks["minio"]["status"] == "unreachable"
+    assert isinstance(checks["minio"]["elapsed_ms"], float)
+    assert fake_s3.closed is True
+    # Object storage does not take part in the aggregate status.
+    assert payload["data"]["status"] == "ok"
+    assert checks["database"]["status"] == "ok"
+    assert checks["embedding"]["status"] == "ok"
 
 
 class _FakeCursor:

@@ -22,6 +22,7 @@ from financecoffer.api.health import (
     database_check,
     embedding_check,
     etl_check,
+    minio_check,
     redis_check,
 )
 from financecoffer.api.metrics import render_ops_metrics
@@ -377,6 +378,7 @@ def create_app(
             "embedding": embedding_check(query_service),
             "redis": redis_check(query_service.config),
             "etl": etl_check(query_service),
+            "minio": minio_check(query_service.config),
         }
         core = (checks["database"]["status"], checks["embedding"]["status"])
         healthy = all(status == "ok" for status in core)

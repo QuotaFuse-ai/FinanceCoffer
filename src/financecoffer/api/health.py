@@ -25,6 +25,11 @@ from financecoffer.core.config import Config
 #: most both, so a black-holed Redis is abandoned inside ~1 second.
 REDIS_OP_TIMEOUT = 0.5
 
+#: Budget for one MinIO probe. A single ``HeadBucket`` must be abandoned inside
+#: a second: a readiness endpoint that hangs on an object store is worse than
+#: one that reports the store as unreachable.
+MINIO_OP_TIMEOUT = 1.0
+
 #: Lag, in seconds, above which an ETL backlog counts as ``degraded``. It is the
 #: threshold of the ``FinanceCofferEtlConsumeLagHigh`` alert
 #: (``deploy/prometheus/rules.yml``: ``fc_etl_consume_lag_seconds > 60``) on
@@ -41,6 +46,15 @@ NOT_CONFIGURED = "not_configured"
 
 def _elapsed_ms(started: float) -> float:
     return round((time.perf_counter() - started) * 1000, 2)
+
+
+def _secret_text(value: Any) -> str:
+    """Read a ``SecretStr`` (or plain string) as stripped text, ``""`` if unset."""
+
+    if value is None:
+        return ""
+    get_secret = getattr(value, "get_secret_value", None)
+    return str(get_secret() if callable(get_secret) else value).strip()
 
 
 def database_check(service: Any) -> dict[str, Any]:
@@ -109,6 +123,68 @@ def redis_check(config: Config, *, timeout: float = REDIS_OP_TIMEOUT) -> dict[st
             if client is not None:
                 with suppress(Exception):
                     client.close()
+    return {"status": status, "elapsed_ms": _elapsed_ms(started)}
+
+
+def minio_check(config: Config, *, timeout: float = MINIO_OP_TIMEOUT) -> dict[str, Any]:
+    """``HeadBucket`` MinIO once over ``config.minio_endpoint`` and report it.
+
+    MinIO is the cold archive's object store, and the archive is optional: the
+    read path never touches it. So this probe answers "is the archive working",
+    not "should traffic be routed here", and its verdict never moves the
+    aggregate ``status``.
+
+    ``status`` is ``ok`` when the bucket answered, ``unreachable`` on any
+    transport, credential or ``HeadBucket`` error (a configured store we cannot
+    use is not healthy), and ``not_configured`` when no credentials are set --
+    ``FC_MINIO_ACCESS_KEY`` / ``FC_MINIO_SECRET_KEY`` ship empty (see
+    ``.env.example``) and the adapter cannot sign a request, so there is
+    nothing to dial. A base install without the ``s3`` extra is
+    ``not_configured`` too, exactly like a missing redis client in
+    :func:`redis_check`: the probe never dials, so nothing can be unreachable.
+    """
+
+    access = _secret_text(config.minio_access_key)
+    secret = _secret_text(config.minio_secret_key)
+    if not (access and secret):
+        return {"status": NOT_CONFIGURED}
+    try:
+        import boto3
+        from botocore.config import Config as BotoConfig
+    except ImportError:  # pragma: no cover - depends on install extras
+        return {"status": NOT_CONFIGURED}
+
+    endpoint = str(config.minio_endpoint or "").strip().rstrip("/")
+    if not endpoint.startswith(("http://", "https://")):
+        endpoint = f"http://{endpoint}"
+
+    started = time.perf_counter()
+    status = OK
+    client: Any = None
+    try:
+        client = boto3.client(
+            "s3",
+            endpoint_url=endpoint,
+            aws_access_key_id=access,
+            aws_secret_access_key=secret,
+            region_name="us-east-1",
+            config=BotoConfig(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                connect_timeout=timeout,
+                read_timeout=timeout,
+                # botocore retries five times by default; a readiness probe
+                # must issue exactly one HeadBucket to keep its own deadline.
+                retries={"max_attempts": 0},
+            ),
+        )
+        client.head_bucket(Bucket=config.minio_bucket)
+    except Exception:  # noqa: BLE001 - botocore raises transport and HTTP errors
+        status = UNREACHABLE
+    finally:
+        if client is not None:
+            with suppress(Exception):
+                client.close()
     return {"status": status, "elapsed_ms": _elapsed_ms(started)}
 
 
