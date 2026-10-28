@@ -578,3 +578,105 @@ def test_ping_never_raises() -> None:
         connector=FailingConnector(),  # type: ignore[arg-type]
     )
     assert broken.ping() is False
+
+
+# -- business metrics --------------------------------------------------------
+
+
+class _MetricsCursor:
+    """Answers each roll-up in ``business_metrics`` with rows of its own."""
+
+    def __init__(self, pending: tuple[int, float | None]) -> None:
+        self._pending = pending
+        self.executed: list[str] = []
+        self._last = ""
+
+    def __enter__(self) -> _MetricsCursor:
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        return False
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
+        self.executed.append(sql)
+        self._last = sql
+
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        if "etl_dlq" in self._last:
+            return [("event_id", 1)]
+        return []
+
+    def fetchone(self) -> tuple[int, float | None]:
+        return self._pending
+
+
+class _MetricsConnector:
+    def __init__(self, cursor: _MetricsCursor) -> None:
+        self._cursor = cursor
+
+    def __call__(self, dsn: str, *, timeout: int) -> _MetricsConnection:
+        return _MetricsConnection(self._cursor)
+
+
+class _MetricsConnection:
+    def __init__(self, cursor: _MetricsCursor) -> None:
+        self._cursor = cursor
+
+    def __enter__(self) -> _MetricsConnection:
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        return False
+
+    def cursor(self) -> _MetricsCursor:
+        return self._cursor
+
+    def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
+        pass
+
+
+def test_consume_lag_measures_queue_wait_not_publisher_time() -> None:
+    """``event_time`` is the publisher's business clock: a legitimate backfill of
+    an old report would read as days of lag the moment it is queued. The gauge
+    therefore has to follow ``received_at``."""
+
+    cursor = _MetricsCursor((1, 12.5))
+    service = QueryService(
+        config=Config(db_url=DSN),
+        connector=_MetricsConnector(cursor),  # type: ignore[arg-type]
+    )
+
+    metrics = service.business_metrics()
+
+    assert metrics is not None
+    assert metrics.consume_lag_seconds == 12.5
+    lag_sql = next(sql for sql in cursor.executed if "min(" in sql)
+    assert "min(received_at)" in lag_sql
+    assert "event_time" not in lag_sql
+    assert "'received'" in lag_sql and "'processing'" in lag_sql
+
+
+def test_consume_lag_is_zero_when_nothing_is_queued() -> None:
+    cursor = _MetricsCursor((0, None))
+    service = QueryService(
+        config=Config(db_url=DSN),
+        connector=_MetricsConnector(cursor),  # type: ignore[arg-type]
+    )
+
+    metrics = service.business_metrics()
+
+    assert metrics is not None
+    assert metrics.consume_lag_seconds == 0.0
+
+
+def test_consume_lag_is_omitted_when_the_wait_cannot_be_measured() -> None:
+    cursor = _MetricsCursor((2, None))
+    service = QueryService(
+        config=Config(db_url=DSN),
+        connector=_MetricsConnector(cursor),  # type: ignore[arg-type]
+    )
+
+    metrics = service.business_metrics()
+
+    assert metrics is not None
+    assert metrics.consume_lag_seconds is None

@@ -195,6 +195,32 @@ def test_alert_rules_reference_known_metrics() -> None:
     assert expressions["FinanceCofferDbPoolSaturated"] == "fc_db_pool_in_use > 12"
 
 
+def test_every_alert_metric_is_explained_in_the_readme() -> None:
+    """An alert on a metric the operator manual never mentions is a silent alert.
+
+    The README's 监控 section is the only place that says which of these
+    families the API actually exports and which have no sampling point in this
+    topology, so every name used by a rule has to be there.
+    """
+
+    text = (DEPLOY / "README.md").read_text(encoding="utf-8")
+    for rule in all_rules():
+        for name in re.findall(r"\bfc_[a-z0-9_]+", rule["expr"]):
+            assert name in text, f"{rule['alert']} alerts on an undocumented metric: {name}"
+
+
+def test_readme_lists_the_exported_metric_sources() -> None:
+    text = (DEPLOY / "README.md").read_text(encoding="utf-8")
+    for name in (
+        "fc_api_requests_total",
+        "fc_etl_events_total",
+        "fc_dirty_data_total",
+        "fc_archive_job_total",
+        "fc_etl_consume_lag_seconds",
+    ):
+        assert name in text, f"deploy/README.md does not list {name}"
+
+
 def test_dockerfile_is_multistage_nonroot_and_healthy() -> None:
     text = (DEPLOY / "Dockerfile").read_text(encoding="utf-8")
     assert text.count("\nFROM ") >= 2

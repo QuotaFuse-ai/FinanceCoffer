@@ -129,7 +129,9 @@ def _render_business_metrics(business: BusinessMetrics) -> list[str]:
         for status, count in sorted(business.archive_jobs.items()):
             lines.append(f'fc_archive_job_total{{status="{_label(status)}"}} {count}')
     if business.consume_lag_seconds is not None:
-        lines.append("# HELP fc_etl_consume_lag_seconds Age of the oldest queued ETL event.")
+        lines.append(
+            "# HELP fc_etl_consume_lag_seconds Age of the oldest event still queued for ETL."
+        )
         lines.append("# TYPE fc_etl_consume_lag_seconds gauge")
         lines.append(f"fc_etl_consume_lag_seconds {business.consume_lag_seconds:.3f}")
     return lines

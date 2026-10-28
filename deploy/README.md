@@ -75,7 +75,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d api worker
 | `migrate` 在空库执行迁移 | 退出码 0，迁移一路到 head，`db status` 显示 `pending 0` |
 | `postgres` / `redis` / `api` / `worker` 健康 | 四个容器均达到 `healthy` |
 | `GET /health` | 200，`database: ok`；未接入 embedding 服务时为 `embedding: unreachable` |
-| `GET /metrics` | 导出 `fc_api_requests_total{method,path,status}` |
+| `GET /metrics` | 导出请求计数、仓库侧 ETL/归档计数与向量层计数；无样本的族整族省略（见「监控」） |
 | `db partitions create --month <YYYY-MM>` | 建出当月 ODS 分区 |
 | `ingest event`（CLI 同步落库） | ODS 与 DWD 同时写入，`source` 由 `source_info.hub` 推导 |
 | 向 Stream 投递事件 → worker 消费 | `ops.etl_event_log` 记为 `done`，ODS 与 DWD 各新增一行 |
@@ -154,9 +154,24 @@ scripts/stop-local.sh
 
 Prometheus 需要与 API 在同一编排网络内，或把 target 改成实际可达地址。规则文件可用 `promtool check rules` 校验。
 
-指标名取自 `docs/specs/cli.md` §3.14 的清单。API 目前实际导出 `fc_api_requests_total` 和
-`fc_api_request_seconds_total`；ETL 延迟、失败计数、缺失分块、归档任务和连接池这五类指标的
-采集点仍待实现，在此之前对应告警处于无数据状态，不会误报。
+指标名取自 `docs/specs/cli.md` §3.14 的清单。`/metrics` 实际导出三组，来源不同，看到同名指标要先看它来自哪一组：
+
+| 指标 | 来源 | 说明 |
+| --- | --- | --- |
+| `fc_api_requests_total{method,path,status}`、`fc_api_request_seconds_total` | API 进程内中间件 | 只统计这一个 API 副本收到的请求 |
+| `fc_etl_events_total{status}`、`fc_dirty_data_total{reason}`、`fc_archive_job_total{status}`、`fc_etl_consume_lag_seconds` | 每次抓取读 `ops.etl_event_log` / `ops.etl_dlq` / `ops.archive_job` | 跨进程、跨副本一致；库读不到时整族省略，不填 0 |
+| `fc_missing_chunk_total{reason}`、`fc_vector_search_seconds*` | 向量层进程内计数 | 只反映**当前 API 进程**做出的切片与检索；切片实际发生在 `fcoffer vector ingest` 与 worker 里，所以标准编排下这两族通常没有样本 |
+
+`fc_etl_consume_lag_seconds` 取的是 `received` / `processing` 里最早一条的 `received_at` 距今秒数，
+也就是「最早那条排队事件等了多久」，不是「落后 stream 队头多少」，也不看 `event_time`——按业务时间算会把正常的历史补录误报成巨大延迟。仓库里只要有排队事件就一定有值，消费端把它清完才回落。
+所以这个值持续偏高有两种可能——消费停了，或者有条事件被重置成排队态却没人再投递它。
+
+下面两项指标在标准编排下**没有采集点**，对应告警恒为无数据：不会误报，但也不会报。
+
+- `fc_db_pool_in_use`：API 的读路径（`QueryService`）用 psycopg 直连、请求结束即归还，没有连接池可采样；`pool_size=5 / max_overflow=10` 的上限只对持有 `Database` 的 worker 与 CLI 成立，而 worker 不暴露 HTTP 端口。要真正监控池水位，得让 worker 把 `engine.pool.checkedout()` 写到 Redis，再由 API 暴露。
+- `fc_missing_chunk_total`：见上表，计数留在切片进程内。
+
+`rules.yml` 里出现的每个指标名都必须在本节有说明，`tests/unit/test_deploy_assets.py` 会检查这一点——改规则时请同步改这张表。
 
 ## 常见故障
 

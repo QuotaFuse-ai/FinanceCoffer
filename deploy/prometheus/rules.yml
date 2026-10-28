@@ -11,8 +11,10 @@ groups:
         annotations:
           summary: "ETL consumer lag above 60 seconds"
           description: >-
-            The newest consumed event is {{ $value }} seconds behind the stream
-            head. Check worker health and Redis stream backlog.
+            The oldest event still marked received/processing has been queued
+            for {{ $value }} seconds (measured from received_at). Either the
+            worker stopped consuming, or an event was reset to the queued state
+            and nothing re-delivered it.
 
       - alert: FinanceCofferEtlEventsFailed
         expr: increase(fc_etl_events_total{status="failed"}[5m]) > 0
@@ -26,6 +28,9 @@ groups:
             {{ $value }} events per second failed within the last five minutes.
             Inspect the dead-letter queue and upstream payload quality.
 
+      # No sampling point in the shipped topology: the counter lives in the
+      # ingest process, not in the API that serves /metrics. See deploy/README.md
+      # section "监控" before trusting this rule to fire.
       - alert: FinanceCofferMissingChunk
         expr: fc_missing_chunk_total > 0
         for: 1m
@@ -50,6 +55,9 @@ groups:
             {{ $value }} archive jobs per second failed within the last five
             minutes. Verify MinIO reachability and bucket permissions.
 
+      # No sampling point: the API opens per-request connections, so the pod
+      # serving /metrics has no pool. The 15-connection ceiling belongs to the
+      # worker's Database. See deploy/README.md section "监控".
       - alert: FinanceCofferDbPoolSaturated
         # SQLAlchemy pool ceiling: pool_size 5 + max_overflow 10 = 15
         # connections; warn above 80%.

@@ -1,10 +1,11 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.4（设计稿）
+版本：v0.5（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
 v0.3 按 T-005 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
 v0.4 按 T-008 实装 `dws build` / `dws show` / `dws rebuild`，§3.9 字段表改为 DDL 口径（指标移入 `metrics_json`），补充确定性、部分失败与合规规则。
+v0.5 `fc_etl_consume_lag_seconds` 的基准从 `event_time` 改为 `received_at`（排队等待时长），避免历史补录被算成巨大延迟。
 
 ## 1. 全局参数
 
@@ -133,7 +134,7 @@ fcoffer etl dlq retry <event-id>|--all
 
 - 消费语义：至少一次；以 `event_id` 幂等去重。
 - 失败重试上限默认 3 次，超限进 DLQ 并计数 `fc_dirty_data_total`。
-- 消费延迟 = `now - event_time`，暴露为 `fc_etl_consume_lag_seconds`。
+- 消费延迟 = `now - received_at`（最早一条排队事件的排队时长，取 `received` / `processing` 状态的最小 `received_at`），暴露为 `fc_etl_consume_lag_seconds`。不以 `event_time` 为基准：那是发布方的业务时间，历史补录会被算成巨大延迟。
 
 ### 3.6 手工接入与回填
 

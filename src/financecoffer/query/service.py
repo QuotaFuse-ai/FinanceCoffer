@@ -183,8 +183,12 @@ def _year_number(record: Mapping[str, Any]) -> int | None:
 class BusinessMetrics:
     """Counters sampled from ``ops.*`` for ``/metrics``.
 
-    ``consume_lag_seconds`` is ``None`` when events are queued but none carries
-    an ``event_time``; the scrape then omits the gauge instead of guessing.
+    ``consume_lag_seconds`` is the age of the oldest event still waiting in the
+    queue, measured from ``received_at`` rather than ``event_time``: the latter
+    is the publisher's business timestamp, so a legitimate backfill of an old
+    report would show up as enormous "lag" the moment it is queued. It is
+    ``None`` only when a row is pending but carries no ``received_at``; the
+    scrape then omits the gauge instead of guessing.
     """
 
     etl_events: dict[str, int]
@@ -309,7 +313,7 @@ class QueryService:
                 archive_jobs = {str(row[0]): int(row[1]) for row in cur.fetchall()}
                 cur.execute(
                     "SELECT count(*), "
-                    "EXTRACT(EPOCH FROM (now() - min(event_time))) "
+                    "EXTRACT(EPOCH FROM (now() - min(received_at))) "
                     "FROM ops.etl_event_log "
                     "WHERE status IN ('received', 'processing')"
                 )
