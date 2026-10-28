@@ -1,6 +1,6 @@
 # FinanceCoffer 产品规格
 
-版本：v0.9（设计稿）
+版本：v0.10（设计稿）
 变更规则：本文件为最新版本，每次修改必须在文末「变更记录」追加一行。
 
 ## 1. 产品定位
@@ -338,6 +338,11 @@ CREATE INDEX idx_ann_chunk_embedding
 | `FC_COMPLIANCE_ENABLED` | `false` | 合规标记开关（DEC-0010）：关闭时不读写 `compliance_tier`/`commercial_use`，开启时写入必填、读取回填 `meta.compliance_tier` |
 | `FC_LOG_LEVEL` | `INFO` | 日志级别 |
 
+加载时的取值校验有两种，都以内层 `E_CONFIG` 报错并点名变量，不回显值：
+
+- **凭据字段拒绝模板占位符**（`FC_EMBEDDING_API_KEY`、`FC_MINIO_ACCESS_KEY`、`FC_MINIO_SECRET_KEY`、`FC_MCP_TOKEN`，DEC-0024）：值精确等于 `CHANGE_ME` 时拒绝。照抄部署模板而未填写的副本因此无法启动。空值与缺省值表示「未启用」（loopback-only 部署不设 MCP token、`local` provider 不用 API key），照常加载，且 `fcoffer config show` 中保持为空而非掩码。
+- **DSN 项的 scheme 校验**（`FC_DB_URL` 须为 `postgresql://` 或 `postgresql+psycopg://`，`FC_REDIS_URL` 须为 `redis://` 或 `rediss://`）。
+
 完整变量清单见 `docs/specs/naming.md`。
 
 ## 9. 部署
@@ -378,3 +383,4 @@ CREATE INDEX idx_ann_chunk_embedding
 | 2026-10-29 | v0.7 | 新增 §6.2.1：`/health` 的 `checks` 统一为 `{status, elapsed_ms?, ...}` 对象、`status` 闭集词表（`ok`/`degraded`/`unreachable`/`not_configured`，`not_installed` 废止）、降级判定表、`etl` 以 60 秒告警阈值为积压判定（消灭 `unknown`）、REST 与 CLI `fcoffer health` 的差异及原因、每次请求两连接的已知限制；依据：客户端可消费的形状必须唯一，且就绪判定与告警不得对同一积压给出相反结论 |
 | 2026-10-29 | v0.8 | §6.2.1 的 `minio` 探针由「尚未实现」改为已落地的 `HeadBucket` 单次探测（含 `not_configured` / `unreachable` 的判定条件），REST 与 CLI 检查项清单同步；`redis` 的「客户端未安装」分支按统一形状不再给 `elapsed_ms`，自有字段列补注。依据：可选依赖的就绪语义以代码可验证的行为为准，`elapsed_ms` 只表示真正发起过的探测耗时 |
 | 2026-10-29 | v0.9 | 变更记录 v0.4 行删除内部任务号，只留业务描述（公开仓库规则：`docs/` 不出现内部任务编号）；本文件现已无任务号残留，其余历史行的编号形态不在此单处理 |
+| 2026-10-29 | v0.10 | §8 补记加载时的两类取值校验：凭据字段拒绝字面量 `CHANGE_ME`（DEC-0024，照抄模板的副本无法启动）、DSN 项 scheme 校验；写明空值/缺省表示「未启用」仍照常加载。依据：配置层行为变更后规格须同步，否则测试无法按本文比对 |
