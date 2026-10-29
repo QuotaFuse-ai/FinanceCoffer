@@ -32,6 +32,16 @@ x-app-env: &app-env
   FC_MINIO_ACCESS_KEY: "${FC_MINIO_ACCESS_KEY:?set FC_MINIO_ACCESS_KEY}"
   FC_MINIO_SECRET_KEY: "${FC_MINIO_SECRET_KEY:?set FC_MINIO_SECRET_KEY}"
   FC_MINIO_BUCKET: "${FC_MINIO_BUCKET:?set FC_MINIO_BUCKET}"
+  # The container never owns the store's lifecycle: compose runs MinIO as a
+  # service. Pin this off so a host .env that enables local autostart cannot
+  # leak into the stack and make the api try to spawn a binary it does not have.
+  FC_MINIO_AUTOSTART: "false"
+  # Forwarded as empty on purpose. They name host paths outside the repository,
+  # so the template cannot supply defaults; the switch above keeps them unused.
+  FC_MINIO_BINARY: "${FC_MINIO_BINARY:-}"
+  FC_MINIO_DATA_DIR: "${FC_MINIO_DATA_DIR:-}"
+  FC_MINIO_LOG_FILE: "${FC_MINIO_LOG_FILE:-}"
+  FC_MINIO_CONSOLE_ENDPOINT: "${FC_MINIO_CONSOLE_ENDPOINT:-}"
   FC_EVENT_CONSUMER: "${FC_EVENT_CONSUMER:?set FC_EVENT_CONSUMER}"
   FC_EVENT_STREAM: "${FC_EVENT_STREAM:?set FC_EVENT_STREAM}"
   FC_EVENT_GROUP: "${FC_EVENT_GROUP:?set FC_EVENT_GROUP}"

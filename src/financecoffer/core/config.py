@@ -60,6 +60,18 @@ class Config(BaseModel):
     minio_secret_key: SecretStr | None = None
     minio_bucket: str = "financecoffer"
 
+    # MinIO process lifecycle (DEC-0028). Autostart is off by default: a
+    # deployed stack runs the store as its own service, and the archive degrades
+    # without it rather than failing the read path. Turning it on makes a launch
+    # ensure a loopback instance is up. The paths name a binary that is kept
+    # outside the repository, so they carry no default -- an unset path is a
+    # clear error only when something actually tries to start the server.
+    minio_autostart: bool = False
+    minio_binary: str = ""
+    minio_data_dir: str = ""
+    minio_log_file: str = ""
+    minio_console_endpoint: str = ""
+
     # Event ingestion
     event_consumer: Literal["redis", "kafka", "webhook"] = "redis"
     event_stream: str = "fc:stockdata:events"

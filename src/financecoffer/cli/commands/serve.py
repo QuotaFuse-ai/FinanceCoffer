@@ -42,6 +42,7 @@ from financecoffer.core.errors import (
 from financecoffer.core.logging import get_logger
 from financecoffer.core.redaction import redact_text
 from financecoffer.db.connection import connect, resolve_cli_dsn
+from financecoffer.ops import minio_process
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _CONSUMERS: tuple[str, ...] = ("redis", "kafka", "webhook")
@@ -410,6 +411,37 @@ def _export_config_environment(config: Config) -> tuple[str, ...]:
     return tuple(sorted(exported))
 
 
+def autostart_object_store(config: Config) -> dict[str, Any] | None:
+    """Bring the local object store up when ``FC_MINIO_AUTOSTART`` asks for it.
+
+    Best-effort on purpose: the archive is optional and the read path never
+    touches the store, so a store that will not start must not take the API
+    with it -- ``fcoffer health`` already reports the same verdict without
+    failing. ``fcoffer minio ensure`` is the strict, exit-code-carrying gate
+    for a launcher that does want to stop on failure.
+    """
+
+    if not config.minio_autostart:
+        return None
+    try:
+        outcome = minio_process.ensure(config)
+    except FinanceCofferError as exc:
+        _log.warning(
+            "object store autostart failed: %s (%s); serving without the archive",
+            exc.message,
+            exc.code,
+        )
+        return None
+    if outcome.get("action") == "started":
+        _log.info(
+            "object store started at %s (console %s, pid %s)",
+            outcome.get("endpoint"),
+            outcome.get("console_endpoint"),
+            outcome.get("pid"),
+        )
+    return outcome
+
+
 def register(app: typer.Typer) -> None:
     serve = add_group(app, name="serve", help_text="Run FinanceCoffer services.")
 
@@ -428,6 +460,10 @@ def register(app: typer.Typer) -> None:
             config = load_cli_config(db_url=options.db_url)
         except FinanceCofferError as exc:
             emit_failure(options, exc)
+
+        # Before the server (and any forked worker) starts, so a cold boot with
+        # the switch on does not race the first archive call.
+        autostart_object_store(config)
 
         try:
             import uvicorn

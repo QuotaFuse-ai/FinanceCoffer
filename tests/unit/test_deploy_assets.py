@@ -163,8 +163,16 @@ def test_env_example_ships_defaults_but_no_credentials() -> None:
         "POSTGRES_DB",
     }
     # `FC_ETL_CONSUMER_NAME` is blank on purpose: the consumer falls back to
-    # its hostname.
-    blank_by_design = {"FC_ETL_CONSUMER_NAME"}
+    # its hostname. The MinIO lifecycle paths are blank for a different reason:
+    # they point at a binary, data directory and log outside the repository, so
+    # no default exists and a composed stack never starts a local server.
+    blank_by_design = {
+        "FC_ETL_CONSUMER_NAME",
+        "FC_MINIO_BINARY",
+        "FC_MINIO_DATA_DIR",
+        "FC_MINIO_LOG_FILE",
+        "FC_MINIO_CONSOLE_ENDPOINT",
+    }
     for key, value in entries.items():
         if key in credential_keys:
             assert value == "", f"{key} must ship empty"

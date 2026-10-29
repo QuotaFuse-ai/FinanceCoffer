@@ -1,6 +1,6 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.10（设计稿）
+版本：v0.11（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
 v0.3 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
@@ -11,6 +11,7 @@ v0.7 错误码表新增 `E_METHOD_NOT_ALLOWED`（REST 405）；未命中路由�
 v0.8 变更记录删除内部任务编号；§3.6 的 `ingest event` 说明改为职能口径（公开仓库规则：`docs/` 不出现内部任务编号与团队称谓）。
 v0.9 §3.3 写明 `serve api --workers N`（N>1）时的配置来源：fork 前把已解析配置导出为 `FC_*` 进程环境，worker 继承后与单 worker 一致；并记录凭据因此多出的落点。
 v0.10 §3.11 `archive run` 新增可重复的 `--symbol` / `--table` 作用域（与时间、字节窗口取交集）；`archive run` / `archive restore` 非 `--dry-run` 时必须显式 `--yes`，否则退出码 2 并给出候选行数；`--dry-run` 保证无副作用；注明 `archive prune` 尚未实现。
+v0.11 新增 §3.16 `minio` 命令组（`status|ensure|start|stop`）与 `FC_MINIO_AUTOSTART` 开关：默认 `false`，打开后 `serve api` 在 fork worker 前尽力确保本地存储可用，失败只告警不阻断；路径项无默认值、只在启动时报错；`start` 拒绝非回环端点。
 
 ## 1. 全局参数
 
@@ -64,6 +65,7 @@ fcoffer [GLOBAL OPTIONS] COMMAND [ARGS]...
 | DWS | `dws build` / `dws show` / `dws rebuild` | 2.3 | P0 |
 | 向量 | `vector chunk` / `vector embed` / `vector index` / `vector search` / `vector reindex` / `vector stats` | 2.4、3.4、3.5 | P0 |
 | 冷热 | `archive run` / `archive status` / `archive restore` / `archive verify` | 3.3、7 | P1 |
+| 对象存储 | `minio status` / `minio ensure` / `minio start` / `minio stop` | 3.3、DEC-0014 | P1 |
 | 查询 | `query structured` / `query risk` / `search announcements` | 4.2 | P0 |
 | 通用工具 | `tool list` / `tool call` | 参考 TickHub | P1 |
 | 监控 | `metrics` / `health` | 5 | P0 |
@@ -112,6 +114,7 @@ fcoffer start-all --host 127.0.0.1 --port 8100 [--consumer redis] [--no-etl]
   导出为 `FC_*` 进程环境变量，worker 继承后与 `--workers 1` 的配置逐项一致，不依赖 worker 侧重新发现 `.env`。
 - 上述导出的取舍：DSN（含密码）、MinIO AccessKey/SecretKey、MCP token 因此多一个落点——本 CLI 自己 fork 的 worker 进程环境。
   这与 `--db-url` 既有的暴露同级，不是日志或输出泄漏；`config show` / `config check` 的脱敏不受影响。`serve admin` 与 `start-all` 均在主进程内构建 app，不导出任何 `FC_*`。
+- `serve api` 在构建 app 之前会按 `FC_MINIO_AUTOSTART` 做一次 §3.16 的 `ensure`：开关为 `false`（默认）时完全跳过；为 `true` 时尽力把本地存储带起来，失败只写一条 WARNING 并继续提供服务（归档按既有的「写失败记账」降级）。这一步在 fork worker 之前执行，多 worker 也只做一次。
 
 ### 3.4 MCP
 
@@ -337,6 +340,24 @@ fcoffer health [--check db,minio,redis,etl] [--output json]
 ```bash
 fcoffer skill install --target claude|cursor|codex [--path DIR] [--force]
 ```
+
+### 3.16 本地对象存储进程（`minio`）
+
+```bash
+fcoffer minio status
+fcoffer minio ensure [--wait 20]
+fcoffer minio start  [--wait 20]
+fcoffer minio stop   [--wait 5]
+```
+
+- **只服务于本地进程**：管理的是 §3.11 归档所用的那台本机 MinIO（DEC-0014）。远端 S3、容器内的存储由各自的运维手段负责，不走这组命令。
+- `status` 只读：报告端点、控制台端点、`FC_MINIO_AUTOSTART` 取值、健康探测结果与 pid 记录（若有）。不配置任何路径也能正常返回。
+- `ensure` 是启动钩子：开关为 `false` 时返回 `{"action":"skipped","reason":"FC_MINIO_AUTOSTART is not enabled"}` 并且**退出码 0**；已健康时返回 `{"action":"noop"}`；否则拉起并返回 `{"action":"started",...}`。
+- `start` 无条件尝试拉起：`FC_MINIO_BINARY` / `FC_MINIO_DATA_DIR` / 两个凭据任一缺失时报 `E_CONFIG`（退出码 3）并在 `details.field` 点名缺哪个键；二进制不存在报 `E_DEPENDENCY`。
+- `stop` 只结束 pid 文件里记录、且镜像名与记录一致的那个进程；没有 pid 文件时返回 `{"stopped":false,"reason":"no pid file"}`，pid 已消失时清掉陈旧记录并说明原因。
+- `--wait` 是等待健康的最长秒数（1..300），超时后 `start` 会结束刚启动的进程并报 `E_DEPENDENCY`，不留半死的子进程。
+- **端点必须是回环地址**（`127.0.0.1` / `localhost` / `::1`）：`start` 对 `0.0.0.0`、远端主机名或非本机 IP 报 `E_INVALID_ARGUMENT`（退出码 2）。控制台端点未配置时按 API 端口 +1 推导。
+- pid 文件写在数据目录下的 `minio.pid`，记录 pid 与二进制名，供 `status` / `stop` 判断「这个进程是不是我们起的」。
 
 ## 4. 命令实施顺序（建议）
 

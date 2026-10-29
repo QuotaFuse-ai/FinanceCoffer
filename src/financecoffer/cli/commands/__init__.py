@@ -8,6 +8,7 @@ from financecoffer.cli.commands import (
     ingest,
     mcp,
     monitor,
+    objstore,
     ods,
     query,
     serve,
@@ -30,6 +31,7 @@ MODULES = (
     vector,
     query,
     monitor,
+    objstore,
     tool,
     skill,
 )
