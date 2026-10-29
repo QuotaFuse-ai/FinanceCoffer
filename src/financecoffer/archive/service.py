@@ -13,8 +13,8 @@ only re-applies the marker.
 from __future__ import annotations
 
 import random
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -70,6 +70,25 @@ class _TableStats:
             "bytes": self.bytes,
             "failed": self.failed,
         }
+
+
+@dataclass(slots=True)
+class _DetailLog:
+    """Bounded per-row preview of what a run would touch (``--dry-run``)."""
+
+    limit: int = MAX_REPORTED
+    entries: list[dict[str, Any]] = field(default_factory=list)
+    dropped: int = 0
+
+    def add(self, entry: dict[str, Any]) -> None:
+        if len(self.entries) >= self.limit:
+            self.dropped += 1
+            return
+        self.entries.append(entry)
+
+    @property
+    def truncated(self) -> bool:
+        return self.dropped > 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +186,132 @@ class ArchiveService:
             )
         return sample
 
+    @staticmethod
+    def _resolve_symbols(values: Sequence[str] | None) -> tuple[str, ...]:
+        """Normalise the repeatable ``--symbol`` filter, dropping duplicates."""
+
+        if not values:
+            return ()
+        seen: dict[str, None] = {}
+        for raw in values:
+            symbol = normalize_symbol(raw)
+            seen.setdefault(symbol, None)
+        return tuple(seen)
+
+    @staticmethod
+    def _resolve_tables(values: Sequence[str] | None) -> tuple[TableSpec, ...]:
+        """Resolve the repeatable ``--table`` filter in schema order.
+
+        An empty filter means "every table"; an unknown name is a parameter
+        error instead of silently archiving nothing (or too much).
+        """
+
+        if not values:
+            return TABLES
+        known = {spec.name: spec for spec in TABLES}
+        wanted: set[str] = set()
+        for raw in values:
+            name = (raw or "").strip()
+            if name not in known:
+                raise InvalidArgumentError(
+                    f"unknown archive table: {name!r}",
+                    details={"field": "table", "table": name, "allowed": sorted(known)},
+                )
+            wanted.add(name)
+        return tuple(spec for spec in TABLES if spec.name in wanted)
+
+    # -- read-only previews -------------------------------------------------
+
+    def count_candidates(
+        self,
+        *,
+        older_than_years: int | None = None,
+        min_bytes: int | None = None,
+        limit: int | None = None,
+        symbols: Sequence[str] | None = None,
+        tables: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        """Count the rows ``run`` would touch; reads only, never writes.
+
+        The confirmation gate reports this count so an operator sees the blast
+        radius before adding ``--yes``, and ``--dry-run`` reuses the same
+        scope resolution so preview and execution cannot disagree.
+        """
+
+        years = self._resolve_years(older_than_years)
+        size = self._resolve_min_bytes(min_bytes)
+        max_rows = self._resolve_limit(limit)
+        scope_symbols = self._resolve_symbols(symbols)
+        specs = self._resolve_tables(tables)
+        cutoff = cold_cutoff(datetime.now(UTC).date(), years)
+
+        rows: list[dict[str, Any]] = []
+        for spec in specs:
+            predicate = self._cold_predicate(spec, cutoff, size, scope_symbols)
+            statement = select(func.count()).select_from(spec.model).where(predicate)
+            with self.database.session_scope() as session:
+                count = int(session.scalar(statement) or 0)
+            rows.append({"table": spec.name, "candidates": count})
+
+        total = sum(item["candidates"] for item in rows)
+        if max_rows is not None:
+            total = min(total, max_rows)
+        return {
+            "older_than_years": years,
+            "cutoff": cutoff.isoformat(),
+            "min_bytes": size,
+            "limit": max_rows,
+            "symbols": list(scope_symbols) or None,
+            "candidates": total,
+            "tables": rows,
+        }
+
+    def count_restore(
+        self,
+        symbol: str,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> dict[str, Any]:
+        """Count the archived rows ``restore`` would read and write back."""
+
+        normalized = normalize_symbol(symbol)
+        start = parse_instant(since, field_name="since")
+        end = parse_instant(until, field_name="until", end_of_day=True)
+
+        rows: list[dict[str, Any]] = []
+        for spec in TABLES:
+            model = spec.model
+            statement = (
+                select(func.count())
+                .select_from(model)
+                .where(
+                    model.is_cold.is_(True),
+                    model.minio_url.is_not(None),
+                    model.symbol == normalized,
+                )
+            )
+            if start is not None:
+                statement = statement.where(spec.date_field >= start.date())
+            if end is not None:
+                statement = statement.where(spec.date_field < end.date())
+            with self.database.session_scope() as session:
+                count = int(session.scalar(statement) or 0)
+            rows.append({"table": spec.name, "archived": count})
+
+        scanned = sum(item["archived"] for item in rows)
+        writes = sum(
+            item["archived"] for item in rows if item["table"] == "stock_announcement"
+        )
+        return {
+            "symbol": normalized,
+            "since": start.isoformat() if start else None,
+            "until": end.isoformat() if end else None,
+            "scanned": scanned,
+            "writes": writes,
+            "tables": rows,
+        }
+
     # -- run ----------------------------------------------------------------
 
     def run(
@@ -176,28 +321,40 @@ class ArchiveService:
         min_bytes: int | None = None,
         dry_run: bool = False,
         limit: int | None = None,
+        symbols: Sequence[str] | None = None,
+        tables: Sequence[str] | None = None,
     ) -> dict[str, Any]:
-        """Archive cold rows; ``--dry-run`` reports only, writing nothing."""
+        """Archive cold rows; ``--dry-run`` reports only, writing nothing.
+
+        ``symbols`` and ``tables`` narrow the run to part of a shared warehouse
+        so one operator's run cannot pull another data owner's rows into the
+        cold tier.
+        """
 
         years = self._resolve_years(older_than_years)
         size = self._resolve_min_bytes(min_bytes)
         max_rows = self._resolve_limit(limit)
+        scope_symbols = self._resolve_symbols(symbols)
+        specs = self._resolve_tables(tables)
         cutoff = cold_cutoff(datetime.now(UTC).date(), years)
 
         failures: list[dict[str, Any]] = []
+        details = _DetailLog()
         stats: list[_TableStats] = []
         attempted = 0
 
-        for spec in TABLES:
+        for spec in specs:
             remaining = None if max_rows is None else max_rows - attempted
             if remaining is not None and remaining <= 0:
                 break
             table_stats = _TableStats(table=spec.name)
             stats.append(table_stats)
-            for row in self._iter_cold_rows(spec, cutoff, size, limit=remaining):
+            for row in self._iter_cold_rows(
+                spec, cutoff, size, limit=remaining, symbols=scope_symbols
+            ):
                 attempted += 1
                 if dry_run:
-                    self._preview_row(spec, row, table_stats, failures)
+                    self._preview_row(spec, row, table_stats, failures, details)
                 else:
                     self._archive_row(spec, row, table_stats, failures)
 
@@ -209,18 +366,30 @@ class ArchiveService:
             "cutoff": cutoff.isoformat(),
             "min_bytes": size,
             "limit": max_rows,
+            "symbols": list(scope_symbols) or None,
+            "tables_scoped": [spec.name for spec in specs],
             "candidates": sum(item.candidates for item in stats),
             "archived": archived,
             "skipped_existing": sum(item.skipped for item in stats),
             "bytes": sum(item.bytes for item in stats),
             "failed": failed,
             "tables": [item.payload(dry_run=dry_run) for item in stats],
+            "candidates_detail": details.entries,
+            "candidates_detail_truncated": details.truncated,
             "failures": failures,
         }
 
-    def _cold_predicate(self, spec: TableSpec, cutoff: date, min_bytes: int) -> Any:
+    def _cold_predicate(
+        self,
+        spec: TableSpec,
+        cutoff: date,
+        min_bytes: int,
+        symbols: Sequence[str] = (),
+    ) -> Any:
         model = spec.model
         conditions: list[Any] = [model.is_cold.is_(False)]
+        if symbols:
+            conditions.append(model.symbol.in_(tuple(symbols)))
         age = spec.date_field < cutoff
         if spec.big_column is None:
             conditions.append(age)
@@ -239,6 +408,7 @@ class ArchiveService:
         min_bytes: int,
         *,
         limit: int | None,
+        symbols: Sequence[str] = (),
     ) -> Iterator[Any]:
         """Stream candidates in primary-key order with keyset pagination.
 
@@ -246,7 +416,7 @@ class ArchiveService:
         (not an offset) is what keeps the next batch from skipping anything.
         """
 
-        predicate = self._cold_predicate(spec, cutoff, min_bytes)
+        predicate = self._cold_predicate(spec, cutoff, min_bytes, symbols)
         pk_fields = spec.pk_fields
         yielded = 0
         cursor: tuple[Any, ...] | None = None
@@ -276,6 +446,7 @@ class ArchiveService:
         row: Any,
         table_stats: _TableStats,
         failures: list[dict[str, Any]],
+        details: _DetailLog,
     ) -> None:
         table_stats.candidates += 1
         primary_key = {name: getattr(row, name) for name in spec.pk_columns}
@@ -304,6 +475,16 @@ class ArchiveService:
             )
             return
         table_stats.bytes += len(candidate.payload)
+        details.add(
+            {
+                "table": spec.name,
+                "primary_key": plain_mapping(primary_key),
+                "symbol": candidate.symbol,
+                "reference_date": candidate.reference_date.isoformat(),
+                "object_key": candidate.object_key,
+                "bytes": len(candidate.payload),
+            }
+        )
 
     def _archive_row(
         self,
@@ -557,12 +738,14 @@ class ArchiveService:
         *,
         since: str | None = None,
         until: str | None = None,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
         """Read archived rows back and verify them against their hashes.
 
         Announcements are written back into PostgreSQL; versioned facts and risk
         events are downloaded, verified and reported only, because their rows
-        were never emptied.
+        were never emptied. ``dry_run`` verifies the same objects but leaves the
+        bodies in MinIO (``would_restore`` counts what a real run would write).
         """
 
         normalized = normalize_symbol(symbol)
@@ -571,6 +754,7 @@ class ArchiveService:
 
         failures: list[dict[str, Any]] = []
         restored = 0
+        would_restore = 0
         verified = 0
         scanned = 0
         missing_chunks = 0
@@ -606,6 +790,9 @@ class ArchiveService:
                     missing_chunks += 1
                     self._append_failure(failures, spec, ref, "body is not valid UTF-8")
                     continue
+                if dry_run:
+                    would_restore += 1
+                    continue
                 try:
                     self._restore_announcement(ref, text)
                 except Exception as exc:
@@ -613,13 +800,15 @@ class ArchiveService:
                     continue
                 restored += 1
 
-        failed = scanned - restored - verified
+        failed = scanned - restored - verified - would_restore
         return {
+            "dry_run": dry_run,
             "symbol": normalized,
             "since": start.isoformat() if start else None,
             "until": end.isoformat() if end else None,
             "scanned": scanned,
             "restored": restored,
+            "would_restore": would_restore,
             "verified": verified,
             "failed": failed,
             "fc_missing_chunk_total": missing_chunks,

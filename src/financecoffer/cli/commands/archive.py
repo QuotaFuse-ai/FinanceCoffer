@@ -3,18 +3,28 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any
 
 import typer
 from sqlalchemy.exc import SQLAlchemyError
 
 from financecoffer.archive import ArchiveService
+from financecoffer.archive.layout import TABLES
 from financecoffer.cli.options import GlobalOptions, from_context
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
 from financecoffer.config.loader import load_cli_config
 from financecoffer.core.envelope import Meta
-from financecoffer.core.errors import FinanceCofferError, PartialFailureError, StorageError
+from financecoffer.core.errors import (
+    FinanceCofferError,
+    InvalidArgumentError,
+    PartialFailureError,
+    StorageError,
+)
+
+TABLE_NAMES = ", ".join(spec.name for spec in TABLES)
+SYMBOL_HELP = "Only archive these symbols (repeatable)."
+TABLE_HELP = f"Only archive these tables (repeatable): {TABLE_NAMES}."
 
 
 def _archive_service(options: GlobalOptions) -> ArchiveService:
@@ -43,6 +53,53 @@ def _run_archive(options: GlobalOptions, action: Callable[[ArchiveService], Any]
         service.close()
 
 
+def _require_yes(
+    options: GlobalOptions,
+    count: Callable[[ArchiveService], dict[str, Any]],
+    *,
+    action: str,
+    field: str,
+    noun: str,
+) -> None:
+    """Refuse a write command that carries no ``--yes`` (exit 2, no changes).
+
+    The blast radius is counted read-only so the message can say what a
+    confirmed run would touch. A warehouse that cannot be counted still gets
+    the same refusal rather than a storage error: the missing flag alone is
+    enough to stop.
+    """
+
+    service = _archive_service(options)
+    try:
+        scope: dict[str, Any] | None = count(service)
+    except InvalidArgumentError as exc:
+        emit_failure(options, exc)
+    except FinanceCofferError:
+        scope = None
+    except Exception:
+        scope = None
+    finally:
+        service.close()
+
+    affected = None if scope is None else scope.get(field)
+    message = f"{action} changes PostgreSQL and MinIO; re-run with --yes to confirm"
+    if affected is not None:
+        message += f" ({affected} {noun} in scope)"
+    emit_failure(
+        options,
+        InvalidArgumentError(
+            message,
+            details={
+                "field": "yes",
+                "hint": "--yes",
+                "candidates": affected,
+                "scope": scope,
+                "dry_run_hint": "--dry-run previews the same rows without writing",
+            },
+        ),
+    )
+
+
 def register(app: typer.Typer) -> None:
     archive = add_group(app, name="archive", help_text="Cold data archive in MinIO.")
 
@@ -67,8 +124,27 @@ def register(app: typer.Typer) -> None:
         limit: int | None = typer.Option(
             None, "--limit", min=1, help="Process at most N candidate rows per run."
         ),
+        symbol: Annotated[list[str] | None, typer.Option("--symbol", help=SYMBOL_HELP)] = None,
+        table: Annotated[list[str] | None, typer.Option("--table", help=TABLE_HELP)] = None,
+        yes: bool = typer.Option(
+            False, "--yes", help="Confirm the run; a non-dry-run without it is refused."
+        ),
     ) -> None:
         options = from_context(ctx)
+        if not dry_run and not yes:
+            _require_yes(
+                options,
+                lambda service: service.count_candidates(
+                    older_than_years=older_than_years,
+                    min_bytes=min_bytes,
+                    limit=limit,
+                    symbols=symbol,
+                    tables=table,
+                ),
+                action="archive run",
+                field="candidates",
+                noun="candidate rows",
+            )
         payload = _run_archive(
             options,
             lambda service: service.run(
@@ -76,6 +152,8 @@ def register(app: typer.Typer) -> None:
                 min_bytes=min_bytes,
                 dry_run=dry_run,
                 limit=limit,
+                symbols=symbol,
+                tables=table,
             ),
         )
         if payload["failed"]:
@@ -107,11 +185,29 @@ def register(app: typer.Typer) -> None:
         until: str | None = typer.Option(
             None, "--until", help="Latest data date (YYYY-MM-DD or RFC 3339)."
         ),
+        dry_run: bool = typer.Option(
+            False,
+            "--dry-run",
+            help="Verify objects and count restores; write no bodies back.",
+        ),
+        yes: bool = typer.Option(
+            False, "--yes", help="Confirm the write-back; a non-dry-run without it is refused."
+        ),
     ) -> None:
         options = from_context(ctx)
+        if not dry_run and not yes:
+            _require_yes(
+                options,
+                lambda service: service.count_restore(symbol, since=since, until=until),
+                action="archive restore",
+                field="writes",
+                noun="announcement rows to write back",
+            )
         payload = _run_archive(
             options,
-            lambda service: service.restore(symbol, since=since, until=until),
+            lambda service: service.restore(
+                symbol, since=since, until=until, dry_run=dry_run
+            ),
         )
         if payload["failed"]:
             emit_failure(

@@ -243,14 +243,19 @@ fcoffer vector stats [--symbol S]
 ### 3.11 冷热分离与 MinIO
 
 ```bash
-fcoffer archive run [--older-than-years 3] [--min-bytes 8192] [--dry-run] [--limit N]
+fcoffer archive run [--older-than-years 3] [--min-bytes 8192] [--dry-run] [--limit N] \
+                    [--symbol S ...] [--table T ...] [--yes]
 fcoffer archive status [--symbol S]
-fcoffer archive restore --symbol S [--since T] [--until T]
+fcoffer archive restore --symbol S [--since T] [--until T] [--dry-run] [--yes]
 fcoffer archive verify [--sample 100]
 ```
 
+- `--symbol` 与 `--table` 可重复，和 `--older-than-years` / `--min-bytes` / `--limit` 取交集，把一次运行限制在部分标的或表上（共享仓库里多个数据 owner 各跑各的）。未知表名报 `E_INVALID_ARGUMENT`。
+- **危险动作闸门**：`archive run` 和 `archive restore` 在非 `--dry-run` 时必须显式传 `--yes`。缺省时命令在触碰 PostgreSQL 或 MinIO 之前退出（退出码 2，`E_INVALID_ARGUMENT`），错误信息与 `details.candidates` 给出本次作用域内将被改动的行数；仓库不可达导致无法统计时仍拒绝执行，只是不带数量。
+- `--dry-run` 无需确认，且绝不写库、绝不上传对象：`archive run --dry-run` 输出候选行数、字节数和逐行预览（默认最多 50 条，超出时 `candidates_detail_truncated=true`）；`archive restore --dry-run` 只下载并校验，返回 `would_restore`，`restored=0`。
 - 转存成功后 PG 大字段置 `NULL`，`is_cold=true`，写入 `minio_url` 与 `content_hash`。
 - 失败计数 `fc_missing_chunk_total`；支持断点重跑。
+- `archive prune` 未实现：当前版本没有该子命令，清理/删除请求不要按此名调用。
 
 ### 3.12 查询（MCP 的 CLI 等价入口）
 

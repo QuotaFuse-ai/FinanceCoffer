@@ -309,6 +309,127 @@ def _seed(database: Database) -> dict[str, Any]:
 # --- tests -----------------------------------------------------------------
 
 
+DWD_MODELS = (
+    StockAnnouncement,
+    StockKline,
+    StockQuoteSnapshot,
+    StockFinancialSnapshot,
+    StockRiskEvent,
+)
+
+
+def _cold_counts(database: Database) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for model in DWD_MODELS:
+        with database.session_scope() as session:
+            counts[model.__tablename__] = int(
+                session.scalar(
+                    select(func.count()).select_from(model).where(model.is_cold.is_(True))
+                )
+                or 0
+            )
+    return counts
+
+
+def _object_keys(storage: S3Storage) -> set[str]:
+    return {item.key for item in storage.iter_objects("")}
+
+
+def test_run_without_yes_is_refused_and_changes_nothing(
+    scratch_database: Database, storage: S3Storage
+) -> None:
+    _seed(scratch_database)
+    cold_before = _cold_counts(scratch_database)
+    objects_before = _object_keys(storage)
+
+    result = runner.invoke(app, ["--db-url", scratch_database.dsn, "archive", "run"])
+
+    assert result.exit_code == 2, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "E_INVALID_ARGUMENT"
+    assert payload["error"]["details"]["field"] == "yes"
+    assert payload["error"]["details"]["hint"] == "--yes"
+    assert payload["error"]["details"]["candidates"] == 6
+    assert "candidate rows in scope" in payload["error"]["message"]
+
+    # The refusal happened before either store was touched.
+    assert _cold_counts(scratch_database) == cold_before
+    assert set(cold_before.values()) == {0}
+    assert _object_keys(storage) == objects_before
+
+
+def test_dry_run_reports_candidates_and_writes_nothing(
+    scratch_database: Database, storage: S3Storage
+) -> None:
+    ids = _seed(scratch_database)
+    objects_before = _object_keys(storage)
+
+    result = runner.invoke(
+        app, ["--db-url", scratch_database.dsn, "archive", "run", "--dry-run"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    data = json.loads(result.stdout)["data"]
+    assert data["dry_run"] is True
+    assert data["candidates"] == 6
+    assert data["archived"] == 0
+    assert len(data["candidates_detail"]) == 6
+    assert data["candidates_detail_truncated"] is False
+    assert {entry["table"] for entry in data["candidates_detail"]} == {
+        "stock_announcement",
+        "stock_financial_snapshot",
+        "stock_kline",
+        "stock_quote_snapshot",
+        "stock_risk_event",
+    }
+
+    # Nothing moved in either store: every row is still hot and keeps its body.
+    assert set(_cold_counts(scratch_database).values()) == {0}
+    old_ann = _read(scratch_database, StockAnnouncement, ids["announcements"]["old"])
+    assert old_ann["clean_content"] == OLD_BODY
+    assert old_ann["minio_url"] is None
+    assert _object_keys(storage) == objects_before
+
+
+def test_symbol_scope_archives_only_the_named_symbol(
+    service: ArchiveService, scratch_database: Database, storage: S3Storage
+) -> None:
+    ids = _seed(scratch_database)
+
+    report = service.run(symbols=[SYMBOL])
+
+    assert report["failed"] == 0, report["failures"]
+    assert report["symbols"] == [SYMBOL]
+    assert report["archived"] == 5  # every cold-eligible row owned by SYMBOL
+
+    # The other symbol's old risk event is still hot and has no object.
+    risk = _read(scratch_database, StockRiskEvent, ids["risk"])
+    assert risk["is_cold"] is False
+    assert risk["minio_url"] is None
+
+    keys = [item.key for item in storage.iter_objects(PREFIX)]
+    assert keys
+    assert all(f"/{SYMBOL}/" in key for key in keys)
+
+
+def test_table_scope_archives_only_the_named_table(
+    service: ArchiveService, scratch_database: Database
+) -> None:
+    ids = _seed(scratch_database)
+
+    report = service.run(tables=["stock_risk_event"])
+
+    assert report["tables_scoped"] == ["stock_risk_event"]
+    assert report["failed"] == 0, report["failures"]
+    assert report["archived"] == 1
+    assert _read(scratch_database, StockRiskEvent, ids["risk"])["is_cold"] is True
+    assert (
+        _read(scratch_database, StockAnnouncement, ids["announcements"]["old"])["is_cold"]
+        is False
+    )
+
+
 def test_dry_run_on_an_empty_warehouse_reports_zero(scratch_database: Database) -> None:
     result = runner.invoke(
         app,
@@ -414,7 +535,20 @@ def test_archive_restore_and_verify_round_trip(
     assert again["archived"] == 0
     assert len(list(storage.iter_objects(PREFIX))) == objects_before
 
-    # -- 4. restore brings the announcement body back ---------------------
+    # -- 4. a restore preview verifies but writes nothing ------------------
+    preview = service.restore(SYMBOL, dry_run=True)
+
+    assert preview["dry_run"] is True
+    assert preview["scanned"] == 5
+    assert preview["would_restore"] == 2
+    assert preview["restored"] == 0
+    assert preview["verified"] == 3
+    assert preview["failed"] == 0
+    assert (
+        _read(scratch_database, StockAnnouncement, announcements["old"])["clean_content"] is None
+    )
+
+    # -- 5. restore brings the announcement body back ---------------------
     restored = service.restore(SYMBOL)
 
     assert restored["failed"] == 0, restored["failures"]
@@ -438,7 +572,7 @@ def test_archive_restore_and_verify_round_trip(
     assert other["restored"] == 0
     assert other["verified"] == 1  # the risk event, matched by symbol
 
-    # -- 5. re-archiving reuses the same objects --------------------------
+    # -- 6. re-archiving reuses the same objects --------------------------
     redo = service.run()
 
     assert redo["archived"] == 2
@@ -447,7 +581,7 @@ def test_archive_restore_and_verify_round_trip(
     assert len(list(storage.iter_objects(PREFIX))) == objects_before
     assert _read(scratch_database, StockAnnouncement, announcements["old"])["is_cold"] is True
 
-    # -- 6. a tampered object is reported, never silently accepted -------
+    # -- 7. a tampered object is reported, never silently accepted -------
     storage.put(key, b"tampered body", content_type="text/plain", sha256=str(stored.sha256))
 
     verified = service.verify(sample=100)

@@ -32,7 +32,7 @@ from financecoffer.archive.layout import (
     sha256_hex,
     years_ago,
 )
-from financecoffer.archive.service import ArchiveService, _TableStats
+from financecoffer.archive.service import ArchiveService, _ArchivedRef, _TableStats
 from financecoffer.archive.storage import S3Storage, StoredObject, endpoint_url
 from financecoffer.core.config import Config
 from financecoffer.core.errors import ConfigError, InvalidArgumentError, StorageError
@@ -566,6 +566,7 @@ class StubService(ArchiveService):
         self.rows = rows
         self.marked: list[str] = []
         self.windows: list[date] = []
+        self.scopes: list[tuple[str, ...]] = []
         self.journaled: list[dict[str, Any]] = []
 
     def _record_failed_job(
@@ -588,9 +589,11 @@ class StubService(ArchiveService):
         min_bytes: int,
         *,
         limit: int | None,
+        symbols: Any = (),
     ) -> Iterator[Any]:
         self.windows.append(cutoff)
-        rows = self.rows.get(spec.name, [])
+        self.scopes.append(tuple(symbols))
+        rows = [row for row in self.rows.get(spec.name, []) if not symbols or row.symbol in symbols]
         yield from rows[:limit] if limit is not None else rows
 
     def _mark_archived(self, spec: Any, candidate: Any) -> None:
@@ -697,3 +700,191 @@ def test_run_reports_a_broken_announcement_without_aborting_the_batch() -> None:
         }
     ]
     assert service.marked == ["test/t012/dwd/stock_announcement/600000/2019/4.txt"]
+
+
+# --- service: scope filters ------------------------------------------------
+
+
+def test_symbol_filter_is_normalised_and_deduplicated() -> None:
+    assert ArchiveService._resolve_symbols(None) == ()
+    assert ArchiveService._resolve_symbols([]) == ()
+    assert ArchiveService._resolve_symbols(["600000", " 600000 ", "600519"]) == (
+        "600000",
+        "600519",
+    )
+
+
+def test_table_filter_keeps_schema_order_and_rejects_unknown_names() -> None:
+    assert ArchiveService._resolve_tables(None) == TABLES
+    chosen = ArchiveService._resolve_tables(["stock_risk_event", "stock_announcement"])
+    assert [spec.name for spec in chosen] == [
+        spec.name for spec in TABLES if spec.name in {"stock_announcement", "stock_risk_event"}
+    ]
+
+    with pytest.raises(InvalidArgumentError) as excinfo:
+        ArchiveService._resolve_tables(["stock_bogus"])
+
+    assert excinfo.value.details["field"] == "table"
+    assert "stock_announcement" in excinfo.value.details["allowed"]
+
+
+def test_run_with_a_symbol_scope_leaves_the_other_symbol_hot() -> None:
+    storage = FakeStorage()
+    rows = [
+        announcement(row_id=7, symbol="600000"),
+        announcement(row_id=8, symbol="600519"),
+    ]
+    service = stub_service({"stock_announcement": rows}, storage=storage)
+
+    payload = service.run(symbols=["600000"])
+
+    assert payload["symbols"] == ["600000"]
+    assert payload["archived"] == 1
+    assert service.scopes[0] == ("600000",)
+    assert service.marked == ["test/t012/dwd/stock_announcement/600000/2019/7.txt"]
+
+
+def test_run_with_a_table_scope_only_visits_the_named_table() -> None:
+    storage = FakeStorage()
+    risk = StockRiskEvent(id=11, symbol="600519", occur_date=date(2019, 3, 8))
+    service = stub_service(
+        {"stock_announcement": [announcement()], "stock_risk_event": [risk]},
+        storage=storage,
+    )
+
+    payload = service.run(tables=["stock_risk_event"])
+
+    assert payload["tables_scoped"] == ["stock_risk_event"]
+    assert payload["archived"] == 1
+    assert service.marked == ["test/t012/dwd/stock_risk_event/600519/2019/11.json"]
+
+
+def test_dry_run_previews_each_candidate_and_writes_nothing() -> None:
+    storage = FakeStorage()
+    service = stub_service({"stock_announcement": [announcement()]}, storage=storage)
+
+    payload = service.run(dry_run=True, symbols=["600000"])
+
+    assert payload["dry_run"] is True
+    assert payload["candidates"] == 1
+    assert payload["candidates_detail_truncated"] is False
+    assert payload["candidates_detail"] == [
+        {
+            "table": "stock_announcement",
+            "primary_key": {"id": 7},
+            "symbol": "600000",
+            "reference_date": "2019-04-01",
+            "object_key": "test/t012/dwd/stock_announcement/600000/2019/7.txt",
+            "bytes": len(announcement().clean_content.encode()),
+        }
+    ]
+    assert storage.calls == []
+    assert service.marked == []
+
+
+def test_dry_run_truncates_the_preview_but_counts_every_candidate() -> None:
+    rows = [announcement(row_id=index) for index in range(1, 61)]
+    service = stub_service({"stock_announcement": rows})
+
+    payload = service.run(dry_run=True)
+
+    assert payload["candidates"] == 60
+    assert len(payload["candidates_detail"]) == 50
+    assert payload["candidates_detail_truncated"] is True
+    assert service.marked == []
+
+
+# --- service: restore preview ---------------------------------------------
+
+
+class StubRestore(ArchiveService):
+    """``restore`` over fixed refs with the write-back recorded, not applied."""
+
+    def __init__(self, refs: list[_ArchivedRef], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.refs = refs
+        self.written: list[tuple[dict[str, Any], str]] = []
+
+    def _archived_refs(
+        self,
+        spec: Any,
+        symbol: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> Iterator[_ArchivedRef]:
+        for ref in self.refs:
+            if ref.spec.name == spec.name:
+                yield ref
+
+    def _restore_announcement(self, ref: _ArchivedRef, text: str) -> None:
+        self.written.append((ref.primary_key, text))
+
+
+def restore_service(
+    refs: list[_ArchivedRef], *, storage: FakeStorage
+) -> StubRestore:
+    config = Config(db_url=OFFLINE_DSN, minio_bucket="financecoffer")
+    return StubRestore(refs, config=config, dsn=OFFLINE_DSN, storage=storage)
+
+
+def _archive_object(storage: FakeStorage, key: str, body: bytes) -> None:
+    storage.put(
+        key,
+        body,
+        content_type="text/plain; charset=utf-8",
+        sha256=sha256_hex(body),
+    )
+
+
+def test_restore_dry_run_verifies_objects_without_writing_back() -> None:
+    body = "贵州茅台 2019 年年度报告摘要"
+    announcement_key = "test/t012/dwd/stock_announcement/600000/2019/7.txt"
+    kline_key = "dwd/stock_kline/600000/2019/2019-01-02_none_1.json"
+    storage = FakeStorage()
+    _archive_object(storage, announcement_key, body.encode("utf-8"))
+    _archive_object(storage, kline_key, b'{"is_cold":true}')
+    refs = [
+        _ArchivedRef(
+            spec=SPECS["stock_announcement"],
+            primary_key={"id": 7},
+            url=minio_url("financecoffer", announcement_key),
+            content_hash=sha256_hex(body.encode("utf-8")),
+        ),
+        _ArchivedRef(
+            spec=SPECS["stock_kline"],
+            primary_key={"symbol": "600000", "trade_date": date(2019, 1, 2)},
+            url=minio_url("financecoffer", kline_key),
+            content_hash=None,
+        ),
+    ]
+    service = restore_service(refs, storage=storage)
+
+    preview = service.restore("600000", dry_run=True)
+
+    assert preview["dry_run"] is True
+    assert preview["scanned"] == 2
+    assert preview["would_restore"] == 1
+    assert preview["verified"] == 1  # the kline is verified, never rewritten
+    assert preview["restored"] == 0
+    assert preview["failed"] == 0
+    assert service.written == []
+
+
+def test_restore_writes_the_announcement_body_back() -> None:
+    body = "贵州茅台 2019 年年度报告摘要"
+    key = "test/t012/dwd/stock_announcement/600000/2019/7.txt"
+    storage = FakeStorage()
+    _archive_object(storage, key, body.encode("utf-8"))
+    ref = _ArchivedRef(
+        spec=SPECS["stock_announcement"],
+        primary_key={"id": 7},
+        url=minio_url("financecoffer", key),
+        content_hash=sha256_hex(body.encode("utf-8")),
+    )
+    service = restore_service([ref], storage=storage)
+
+    report = service.restore("600000")
+
+    assert report["restored"] == 1
+    assert report["would_restore"] == 0
+    assert service.written == [({"id": 7}, body)]

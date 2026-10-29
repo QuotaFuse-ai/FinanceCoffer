@@ -1156,3 +1156,161 @@ def test_skill_install_help_documents_created_directories() -> None:
     text = " ".join(result.stdout.split())
     assert "missing directories are created automatically" in text
     assert "created if missing" in text
+
+
+# -- archive: scope filters and the --yes gate ------------------------------
+
+
+class _FakeArchive:
+    """Just enough of ``ArchiveService`` to observe what the CLI asks for."""
+
+    instances: list["_FakeArchive"] = []
+
+    def __init__(self, **_: object) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+        self.closed = False
+        _FakeArchive.instances.append(self)
+
+    def count_candidates(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("count_candidates", kwargs))
+        return {"candidates": 4, "tables": []}
+
+    def count_restore(self, symbol: str, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("count_restore", {"symbol": symbol, **kwargs}))
+        return {"writes": 2}
+
+    def run(self, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("run", kwargs))
+        return {"failed": 0, "archived": 0, "dry_run": kwargs["dry_run"]}
+
+    def restore(self, symbol: str, **kwargs: object) -> dict[str, object]:
+        self.calls.append(("restore", {"symbol": symbol, **kwargs}))
+        return {"failed": 0, "restored": 0, "dry_run": kwargs.get("dry_run")}
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def fake_archive(monkeypatch):
+    from financecoffer.cli.commands import archive as archive_module
+
+    _FakeArchive.instances = []
+    monkeypatch.setattr(archive_module, "load_cli_config", lambda **_: _config())
+    monkeypatch.setattr(archive_module, "ArchiveService", _FakeArchive)
+    return _FakeArchive
+
+
+def test_archive_run_without_yes_is_refused_before_any_write(fake_archive) -> None:
+    result = _invoke("archive", "run")
+
+    assert result.exit_code == 2
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "E_INVALID_ARGUMENT"
+    assert payload["error"]["details"]["field"] == "yes"
+    assert payload["error"]["details"]["hint"] == "--yes"
+    assert payload["error"]["details"]["candidates"] == 4
+    assert "--yes" in payload["error"]["message"]
+    assert "4 candidate rows in scope" in payload["error"]["message"]
+
+    # Only the read-only count ran; nothing was archived.
+    assert [name for name, _ in fake_archive.instances[0].calls] == ["count_candidates"]
+    assert all(instance.closed for instance in fake_archive.instances)
+
+
+def test_archive_run_with_yes_forwards_the_scope(fake_archive) -> None:
+    result = _invoke(
+        "archive",
+        "run",
+        "--yes",
+        "--symbol",
+        "600000",
+        "--table",
+        "stock_announcement",
+    )
+
+    assert result.exit_code == 0, result.stdout
+    calls = fake_archive.instances[0].calls
+    assert [name for name, _ in calls] == ["run"]
+    assert calls[0][1] == {
+        "older_than_years": None,
+        "min_bytes": 8192,
+        "dry_run": False,
+        "limit": None,
+        "symbols": ["600000"],
+        "tables": ["stock_announcement"],
+    }
+
+
+def test_archive_run_dry_run_needs_no_confirmation(fake_archive) -> None:
+    result = _invoke("archive", "run", "--dry-run")
+
+    assert result.exit_code == 0, result.stdout
+    calls = fake_archive.instances[0].calls
+    assert [name for name, _ in calls] == ["run"]
+    assert calls[0][1]["dry_run"] is True
+
+
+def test_archive_run_still_refuses_when_the_scope_cannot_be_counted(
+    monkeypatch, fake_archive
+) -> None:
+    from financecoffer.core.errors import StorageError
+
+    def uncountable(self, **_: object) -> dict[str, object]:
+        raise StorageError("warehouse is offline", details={})
+
+    monkeypatch.setattr(_FakeArchive, "count_candidates", uncountable)
+
+    result = _invoke("archive", "run")
+
+    assert result.exit_code == 2
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "E_INVALID_ARGUMENT"
+    assert payload["error"]["details"]["candidates"] is None
+    assert "candidate rows" not in payload["error"]["message"]
+
+
+def test_archive_run_rejects_an_unknown_table(monkeypatch, fake_archive) -> None:
+    from financecoffer.core.errors import InvalidArgumentError
+
+    def reject(self, **_: object) -> dict[str, object]:
+        raise InvalidArgumentError(
+            "unknown archive table: 'bogus'", details={"field": "table", "table": "bogus"}
+        )
+
+    monkeypatch.setattr(_FakeArchive, "count_candidates", reject)
+
+    result = _invoke("archive", "run", "--table", "bogus")
+
+    assert result.exit_code == 2
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "E_INVALID_ARGUMENT"
+    assert payload["error"]["details"]["field"] == "table"
+    assert all(instance.closed for instance in fake_archive.instances)
+
+
+def test_archive_restore_without_yes_is_refused(fake_archive) -> None:
+    result = _invoke("archive", "restore", "--symbol", "600000")
+
+    assert result.exit_code == 2
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "E_INVALID_ARGUMENT"
+    assert payload["error"]["details"]["field"] == "yes"
+    assert payload["error"]["details"]["candidates"] == 2
+    assert "2 announcement rows to write back" in payload["error"]["message"]
+    assert [name for name, _ in fake_archive.instances[0].calls] == ["count_restore"]
+    assert fake_archive.instances[0].calls[0][1] == {
+        "symbol": "600000",
+        "since": None,
+        "until": None,
+    }
+
+
+def test_archive_restore_dry_run_needs_no_confirmation(fake_archive) -> None:
+    result = _invoke("archive", "restore", "--symbol", "600000", "--dry-run")
+
+    assert result.exit_code == 0, result.stdout
+    calls = fake_archive.instances[0].calls
+    assert [name for name, _ in calls] == ["restore"]
+    assert calls[0][1]["dry_run"] is True
