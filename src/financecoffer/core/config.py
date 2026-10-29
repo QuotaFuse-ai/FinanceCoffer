@@ -20,9 +20,11 @@ SECRET_FIELDS: frozenset[str] = frozenset(
     {"embedding_api_key", "minio_access_key", "minio_secret_key", "mcp_token"}
 )
 
-#: The literal the deployment template uses to mean "the operator has not filled
-#: this in yet". A credential that keeps it would be a publicly known secret, so
-#: it is refused on load instead of reaching a live deployment. Only this exact
+#: The literal older deployment templates used to mean "the operator has not
+#: filled this in yet". A credential that keeps it would be a publicly known
+#: secret, so it is refused on load instead of reaching a live deployment; the
+#: current template ships empty values instead (DEC-0027) and this check stays
+#: as a backstop for files written against the old convention. Only this exact
 #: spelling is refused: look-alikes are plausible real secrets and stay accepted.
 PLACEHOLDER_SECRET = "CHANGE_ME"
 

@@ -4,8 +4,9 @@
 #
 # Secrets: this file contains none. Every value is interpolated from
 # deploy/.env, which is gitignored. deploy/.env.example ships a working default
-# for every non-credential setting; only the credentials and the deployment
-# identity stay CHANGE_ME and must be filled in. Run with an explicit env file:
+# for every non-credential setting and leaves the credentials and the
+# deployment identity empty; the required ones are `${VAR:?}` below, so compose
+# refuses to render until they are filled in. Run with an explicit env file:
 #
 #   docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
 #

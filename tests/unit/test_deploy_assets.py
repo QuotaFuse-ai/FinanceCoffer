@@ -152,29 +152,46 @@ def test_env_example_ships_defaults_but_no_credentials() -> None:
     assert fc_keys == {f"FC_{field.upper()}" for field in Config.model_fields}
     assert {"POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"} <= set(entries)
 
-    # CHANGE_ME means "the operator must supply this": credentials plus the
-    # deployment identity (role, database name, DSN). Everything else ships a
-    # value Config already accepts.
-    placeholder_keys = {f"FC_{name.upper()}" for name in SECRET_FIELDS} | {
+    # Credentials ship empty: the template is published as-is, so it may only
+    # carry non-values there. Everything else ships a value Config already
+    # accepts.
+    credential_keys = {f"FC_{name.upper()}" for name in SECRET_FIELDS} | {
         "FC_DB_URL",
         "FC_REDIS_URL",
         "POSTGRES_USER",
         "POSTGRES_PASSWORD",
         "POSTGRES_DB",
     }
+    # `FC_ETL_CONSUMER_NAME` is blank on purpose: the consumer falls back to
+    # its hostname.
+    blank_by_design = {"FC_ETL_CONSUMER_NAME"}
     for key, value in entries.items():
-        if key in placeholder_keys:
-            assert value == "CHANGE_ME", f"{key} must stay a placeholder"
+        if key in credential_keys:
+            assert value == "", f"{key} must ship empty"
+        elif key in blank_by_design:
+            assert value == "", f"{key} must stay blank by design"
         else:
-            assert value != "CHANGE_ME", f"{key} must ship a working default"
+            assert value != "", f"{key} must ship a working default"
 
-    # Non-placeholder settings must already satisfy Config, so a template copy
+    # Empty must still fail loudly, otherwise a verbatim copy boots without
+    # credentials: compose refuses unset-or-empty (`:?`) on the required keys.
+    compose_text = (DEPLOY / "compose.yaml").read_text(encoding="utf-8")
+    for key in (
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DB",
+        "FC_MINIO_ACCESS_KEY",
+        "FC_MINIO_SECRET_KEY",
+    ):
+        assert f"${{{key}:?" in compose_text, f"{key} must be required by compose"
+
+    # Non-credential settings must already satisfy Config, so a template copy
     # can never fail on an enum, boolean or integer again.
     Config(
         **{
             key.lower()[3:]: value
             for key, value in entries.items()
-            if key in fc_keys - placeholder_keys
+            if key in fc_keys - credential_keys
         }
     )
 

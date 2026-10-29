@@ -24,7 +24,7 @@ postgres / redis / minio  (健康检查通过)
 
 ## 环境变量
 
-变量名与 `src/financecoffer/core/config.py` 一致，模板见 `.env.example`。模板里**只有凭据与部署身份是 `CHANGE_ME` 占位符**，其余项都带可用默认值：
+变量名与 `src/financecoffer/core/config.py` 一致，模板见 `.env.example`。模板里**只有凭据与部署身份留空**，其余项都带可用默认值：
 
 - Compose 专用：`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`
 - 数据库与事件：`FC_DB_URL`、`FC_REDIS_URL`、`FC_EVENT_CONSUMER`、`FC_EVENT_STREAM`、`FC_EVENT_GROUP`
@@ -37,15 +37,20 @@ postgres / redis / minio  (健康检查通过)
 约定：
 
 - 真实 `.env` 只留在本机，已被 `.gitignore` 忽略；不要提交、不要贴进日志。
-- `CHANGE_ME` 是占位符标记，不是一个可用的值：任何一项留着它，`fcoffer config show`
-  都会以 `E_CONFIG` 拒绝并点名该变量——凭据字段在配置层拦截，DSN 项由各自的 scheme 校验拦截。
+- 模板里的凭据项**一律留空**，仓库因此可以直接公开：空串不是值，复制出去也不构成泄漏。
+- 留空不等于能启动：`compose.yaml` 把必填项写成 `${VAR:?}`，为空时 `docker compose`
+  拒绝渲染并点名该键；应用侧 `FC_DB_URL` 为空则报 `E_CONFIG`（not configured）。
   照抄模板而不填的副本启动不了，这是刻意的。
-- Compose 文件中没有任何字面量密钥，全部通过 `.env` 插值；`compose.yaml` 里标了必填（`:?`）的项缺失会让 `docker compose` 直接报错，标了默认值（`:-`）的 ETL 调优项缺失时静默回落到默认值。
+- 配置层另有一道兜底：凭据字段拒绝字面量 `CHANGE_ME`（DEC-0024），旧模板留下的
+  占位符同样无法启动。
+- Compose 文件中没有任何字面量密钥，全部通过 `.env` 插值；`compose.yaml` 里标了必填（`:?`）的项缺失或为空会让 `docker compose` 直接报错，标了默认值（`:-`）的 ETL 调优项缺失时静默回落到默认值。
 - `fcoffer config show` 的脱敏行为不受部署脚本影响。
 
 ## 照抄模板时要填哪几项
 
-`cp deploy/.env.example deploy/.env` 之后，**只改下面 9 项**，其余保持模板原样即可：
+`cp deploy/.env.example deploy/.env` 之后，**只有下面 9 项要你决定**（模板里这 9 项都是空值），
+其余保持模板原样即可。其中 `FC_EMBEDDING_API_KEY`、`FC_MCP_TOKEN` 在特定部署下**本就该留空**，
+表里已注明；空值在配置层等同「未设置」，会回落到内置默认值：
 
 | 变量 | 是什么 | 从哪来 |
 | --- | --- | --- |
@@ -65,34 +70,38 @@ postgres / redis / minio  (健康检查通过)
 （stream/group/bucket 等）。需要调优时直接改对应项，`compose.yaml` 会把它传进容器；
 改完请重新 `up -d`（`docker compose` 不会热加载 `.env`）。
 
-### `CHANGE_ME` 与空值是两回事
+### 空值在这份模板里的两种含义
 
-`FC_MCP_TOKEN`、`FC_EMBEDDING_API_KEY` 在 `compose.yaml` 里是 `${VAR:-}`（允许为空），
-模板里却是 `CHANGE_ME`，两者含义完全不同：
+模板把凭据留空，是为了让仓库可以直接公开（空串不是值）。但同样是空值，落到运行时的
+后果并不一样，填之前要分清楚：
 
-- **空值 = 不启用。** loopback-only 部署不设 MCP token，`local` provider 不需要 API key。
-- **`CHANGE_ME` = 还没填。** 配置层拒绝字面量 `CHANGE_ME`：`fcoffer config show` 直接以
-  `E_CONFIG` 报错并点名该变量，不会把一个公开仓库里人人皆知的值当作真实凭据启动。
+- **必填项留空 = 起不来。** `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`、
+  `FC_MINIO_ACCESS_KEY` / `FC_MINIO_SECRET_KEY` 在 `compose.yaml` 里是 `${VAR:?}`，
+  为空时 `docker compose` 直接拒绝渲染并点名该键；`FC_DB_URL` 为空则应用侧报
+  `E_CONFIG`（not configured）。
+- **可选项留空 = 不启用。** `FC_EMBEDDING_API_KEY` 在 `local` provider 下用不到；
+  `FC_MCP_TOKEN` 为空表示不做 bearer 校验，**只允许回环部署**，任何能被其他机器访问的
+  部署都必须填上。
 
-所以这两项**要么填真值，要么清空，不要留着 `CHANGE_ME`**。其余凭据项同理，
-留着占位符一样启动不了。
+另外，配置层仍拒绝字面量 `CHANGE_ME`（DEC-0024）：从旧模板复制过来的 `.env` 若还留着
+占位符，启动时同样会被 `E_CONFIG` 拦下并点名变量。
 
-填完先渲染一遍再启动，确认没有残留的占位符：
+填完先渲染一遍再启动，渲染能过就说明必填项都已有值：
 
 ```sh
-docker compose --env-file deploy/.env -f deploy/compose.yaml config | grep -n 'CHANGE_ME' \
-  && echo '还有未填的项，先补齐' || echo '没有残留占位符'
+docker compose --env-file deploy/.env -f deploy/compose.yaml config >/dev/null \
+  && echo '必填项已齐，可以启动' || echo '还有必填项为空，看上一条报错里的键名'
 ```
 
-`deploy/.env.example` 本身渲染出来会有 `CHANGE_ME`，那是正常现象——只有从模板复制出来的
-`deploy/.env` 渲染后不应再有。渲染结果里 `api`、`worker`、`migrate` 三个应用服务都应带上
+`deploy/.env.example` 原样渲染会直接失败（必填项为空），那是正常现象——只有填过的
+`deploy/.env` 才能渲染成功。渲染结果里 `api`、`worker`、`migrate` 三个应用服务都应带上
 `FC_ETL_*` 等项目（缺了说明该 `.env` 是按旧模板写的，或是编排文件漏了转发）。
 
 ## 首次启动
 
 ```sh
 cp deploy/.env.example deploy/.env
-# 编辑 deploy/.env，只填 CHANGE_ME 项（见上一节「照抄模板时要填哪几项」）
+# 编辑 deploy/.env，填掉 9 个空着的凭据项（见上一节「照抄模板时要填哪几项」）
 
 docker compose --env-file deploy/.env -f deploy/compose.yaml build
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d

@@ -340,7 +340,7 @@ CREATE INDEX idx_ann_chunk_embedding
 
 加载时的取值校验有两种，都以内层 `E_CONFIG` 报错并点名变量，不回显值：
 
-- **凭据字段拒绝模板占位符**（`FC_EMBEDDING_API_KEY`、`FC_MINIO_ACCESS_KEY`、`FC_MINIO_SECRET_KEY`、`FC_MCP_TOKEN`，DEC-0024）：值精确等于 `CHANGE_ME` 时拒绝。照抄部署模板而未填写的副本因此无法启动。空值与缺省值表示「未启用」（loopback-only 部署不设 MCP token、`local` provider 不用 API key），照常加载，且 `fcoffer config show` 中保持为空而非掩码。
+- **凭据字段拒绝模板占位符**（`FC_EMBEDDING_API_KEY`、`FC_MINIO_ACCESS_KEY`、`FC_MINIO_SECRET_KEY`、`FC_MCP_TOKEN`，DEC-0024）：值精确等于 `CHANGE_ME` 时拒绝。部署模板现在直接留空，这条校验保留为旧模板文件的兜底。空值与缺省值表示「未启用」（loopback-only 部署不设 MCP token、`local` provider 不用 API key），照常加载，且 `fcoffer config show` 中保持为空而非掩码。照抄模板而未填写的副本仍然无法启动：`compose.yaml` 对必填项用 `${VAR:?}` 拒绝空值，`FC_DB_URL` 为空时应用侧报 `E_CONFIG`（not configured）。
 - **DSN 项的 scheme 校验**（`FC_DB_URL` 须为 `postgresql://` 或 `postgresql+psycopg://`，`FC_REDIS_URL` 须为 `redis://` 或 `rediss://`）。
 
 完整变量清单见 `docs/specs/naming.md`。
@@ -385,3 +385,4 @@ CREATE INDEX idx_ann_chunk_embedding
 | 2026-10-29 | v0.9 | 变更记录 v0.4 行删除内部任务号，只留业务描述（公开仓库规则：`docs/` 不出现内部任务编号）；本文件现已无任务号残留，其余历史行的编号形态不在此单处理 |
 | 2026-10-29 | v0.10 | §8 补记加载时的两类取值校验：凭据字段拒绝字面量 `CHANGE_ME`（DEC-0024，照抄模板的副本无法启动）、DSN 项 scheme 校验；写明空值/缺省表示「未启用」仍照常加载。依据：配置层行为变更后规格须同步，否则测试无法按本文比对 |
 | 2026-10-29 | v0.11 | §10 验收口径改为职能表述（「验收环节」「第 3 节的安全边界」），删除团队称谓（DEC-0025，公开仓库规则：`docs/` 不出现内部任务编号与团队称谓） |
+| 2026-10-29 | v0.12 | §8 同步部署模板口径变更：`deploy/.env.example` 的凭据项一律留空（DEC-0027），`CHANGE_ME` 校验降为旧模板兜底；「照抄模板无法启动」的依据改为 compose 的 `${VAR:?}` 与空 DSN 报 `E_CONFIG`。依据：模板取值策略变更后，规格里描述启动失败原因的句子必须与实际机制一致 |
