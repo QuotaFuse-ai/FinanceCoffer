@@ -9,6 +9,7 @@ v0.5 `fc_etl_consume_lag_seconds` 的基准从 `event_time` 改为 `received_at`
 v0.6 明确配置解析口径：所有命令按 **内置默认值 → 仓库 `.env` → 进程环境变量 → `--db-url`** 加载，`.env` 按当前工作目录查找、缺失时静默回退；`db migrate/status` 等经 `MigrationRunner` 的命令统一走该路径（此前会忽略本机 `.env` 并报 `FC_DB_URL is not configured`）。
 v0.7 错误码表新增 `E_METHOD_NOT_ALLOWED`（REST 405）；未命中路由与其它框架级 4xx 统一走标准信封，`404` 复用 `E_NOT_FOUND`。
 v0.8 变更记录删除内部任务编号；§3.6 的 `ingest event` 说明改为职能口径（公开仓库规则：`docs/` 不出现内部任务编号与团队称谓）。
+v0.9 §3.3 写明 `serve api --workers N`（N>1）时的配置来源：fork 前把已解析配置导出为 `FC_*` 进程环境，worker 继承后与单 worker 一致；并记录凭据因此多出的落点。
 
 ## 1. 全局参数
 
@@ -105,6 +106,11 @@ fcoffer start-all --host 127.0.0.1 --port 8100 [--consumer redis] [--no-etl]
 - `serve api`：FastAPI，暴露 REST、`/health`、`/metrics`。
 - `start-all`：主进程 API，子进程 ETL 消费；子进程崩溃重启策略参考 TickHub（5 分钟 3 次后停止并告警，API 继续服务）。
 - 默认只监听回环地址；HTTP 暴露到非回环地址必须配置 token 与 Host 白名单。
+- `serve api --workers N` 的配置来源：`N = 1` 时在主进程内构建 app，直接使用 CLI 已解析的配置；`N > 1` 时 uvicorn 只能按 import string 拉起 worker，每个 worker 会重新执行 `create_app()`，
+  该入口默认只读**进程环境**、不读仓库 `.env`。为此 CLI 在 fork 前把**已解析的完整配置**（内置默认值 → 仓库 `.env` → 进程环境 → `--db-url` 的最终结果）
+  导出为 `FC_*` 进程环境变量，worker 继承后与 `--workers 1` 的配置逐项一致，不依赖 worker 侧重新发现 `.env`。
+- 上述导出的取舍：DSN（含密码）、MinIO AccessKey/SecretKey、MCP token 因此多一个落点——本 CLI 自己 fork 的 worker 进程环境。
+  这与 `--db-url` 既有的暴露同级，不是日志或输出泄漏；`config show` / `config check` 的脱敏不受影响。`serve admin` 与 `start-all` 均在主进程内构建 app，不导出任何 `FC_*`。
 
 ### 3.4 MCP
 

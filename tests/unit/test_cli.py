@@ -634,6 +634,92 @@ def test_start_all_runs_the_api_and_supervises_the_consumer(monkeypatch) -> None
     assert seen["host"] == "127.0.0.1"
 
 
+def test_serve_api_workers_export_the_resolved_configuration(monkeypatch) -> None:
+    """QUOT-179 / S-03-1: a worker must inherit what the CLI resolved.
+
+    ``--workers N`` hands uvicorn an import string, so each worker re-runs
+    ``create_app()`` and resolves from the process environment alone. The
+    resolved configuration -- including ``.env`` values and ``--db-url``, and
+    including credentials -- is published before the fork.
+    """
+
+    import os
+
+    import uvicorn
+
+    from financecoffer.cli.commands import serve as serve_module
+
+    captured: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> None:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr(
+        serve_module,
+        "load_cli_config",
+        lambda **_: _config(minio_secret_key="s3cr3t-key", rate_limit_per_minute=7),
+    )
+    isolated = {key: value for key, value in os.environ.items() if not key.startswith("FC_")}
+    monkeypatch.setattr(os, "environ", isolated)
+
+    result = _invoke("serve", "api", "--workers", "2")
+
+    assert result.exit_code == 0
+    assert captured["kwargs"]["workers"] == 2
+    assert captured["kwargs"]["factory"] is True
+    assert isolated["FC_DB_URL"] == _DSN
+    assert isolated["FC_MINIO_SECRET_KEY"] == "s3cr3t-key"
+    assert isolated["FC_RATE_LIMIT_PER_MINUTE"] == "7"
+    # Unset values stay unset instead of being published as empty strings.
+    assert "FC_MCP_TOKEN" not in isolated
+    assert "FC_ETL_CONSUMER_NAME" not in isolated
+
+
+def test_serve_api_single_worker_passes_the_built_app_and_exports_nothing(monkeypatch) -> None:
+    """The fix is scoped to the multi-worker branch; one worker is unchanged."""
+
+    import os
+
+    import uvicorn
+
+    from financecoffer.cli.commands import serve as serve_module
+
+    captured: dict[str, object] = {}
+
+    def fake_run(*args: object, **kwargs: object) -> None:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr(serve_module, "load_cli_config", lambda **_: _config())
+    isolated = {key: value for key, value in os.environ.items() if not key.startswith("FC_")}
+    monkeypatch.setattr(os, "environ", isolated)
+
+    result = _invoke("serve", "api")
+
+    assert result.exit_code == 0
+    assert "workers" not in captured["kwargs"]  # in-process app, no import string
+    assert hasattr(captured["args"][0], "routes")  # the FastAPI instance, not an import string
+    assert "FC_DB_URL" not in isolated
+
+
+def test_config_environment_reports_names_only() -> None:
+    """The helper never returns or logs a value alongside a name."""
+
+    from financecoffer.cli.commands import serve as serve_module
+
+    exported = serve_module._config_environment(
+        _config(minio_secret_key="s3cr3t-key", embedding_api_key="emb-key")
+    )
+
+    assert exported["FC_DB_URL"] == _DSN
+    assert exported["FC_MINIO_SECRET_KEY"] == "s3cr3t-key"
+    assert exported["FC_EMBEDDING_API_KEY"] == "emb-key"
+    assert all(name.startswith("FC_") for name in exported)
+
+
 def test_start_all_rejects_an_unknown_consumer(monkeypatch) -> None:
     from financecoffer.cli.commands import serve as serve_module
 

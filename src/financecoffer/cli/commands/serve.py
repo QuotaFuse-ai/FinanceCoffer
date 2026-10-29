@@ -31,7 +31,7 @@ from financecoffer.cli.commands.monitor import HEALTH_CHECKS, health_probes
 from financecoffer.cli.options import from_context
 from financecoffer.cli.output import emit_failure
 from financecoffer.cli.placeholder import add_group
-from financecoffer.config.loader import load_cli_config
+from financecoffer.config.loader import env_var_name, load_cli_config
 from financecoffer.core.config import Config
 from financecoffer.core.errors import (
     ConfigError,
@@ -350,6 +350,66 @@ def _serve_all(
         )
 
 
+def _config_environment(config: Config) -> dict[str, str]:
+    """Render a resolved :class:`Config` back into canonical ``FC_*`` values.
+
+    ``uvicorn`` can only spread ``workers > 1`` from an import string, so every
+    worker re-runs ``create_app()`` -- and that default is ``load_config()``,
+    which reads the process environment only and never the repo ``.env``. The
+    fix is therefore to publish what this process has *already* resolved: the
+    worker rebuilds the exact configuration the CLI
+    resolved, instead of re-discovering it in a context that cannot see
+    ``.env``. ``--env-file`` behaviour, ``--db-url`` precedence and defaults
+    then agree between ``--workers 1`` and ``--workers N`` by construction.
+
+    Empty or unset values stay unset (an empty ``FC_*`` already means "unset"
+    to the loader). ``SecretStr`` fields are deliberately unwrapped: the child
+    validates the same credential the parent did. See the trade-off note in
+    :func:`_export_config_environment`.
+    """
+
+    exported: dict[str, str] = {}
+    for name in Config.model_fields:
+        value = getattr(config, name)
+        if value is None:
+            continue
+        reveal = getattr(value, "get_secret_value", None)
+        if callable(reveal):
+            value = reveal()
+        text = str(value).strip()
+        if text:
+            exported[env_var_name(name)] = text
+    return exported
+
+
+def _export_config_environment(config: Config) -> tuple[str, ...]:
+    """Publish the resolved configuration to this process, return the names.
+
+    The forked workers inherit both the rest of our environment and these
+    values, which is deliberate and is the trade-off accepted for the import
+    string:
+
+    * the DSN (password included), the MinIO keys and the MCP token get one more
+      landing spot -- the environment of the workers this CLI itself forks. That
+      is the same credential the parent already holds in memory and the same
+      exposure ``--db-url`` had before this fix; it is not a new *log* or
+      *output* leak, and ``config show`` / ``config check`` keep masking it.
+    * the alternative -- letting ``create_app()`` fall back to repo ``.env``
+      discovery -- would make a library helper depend on the working directory
+      of an imported module and would silently change the meaning of
+      ``create_app()`` for every caller, tests included. Exporting is explicit,
+      scoped to the multi-worker branch, and leaves the single-worker path
+      untouched.
+
+    Only variable *names* are returned, so a caller can report what was
+    inherited without putting a value into a log line.
+    """
+
+    exported = _config_environment(config)
+    os.environ.update(exported)
+    return tuple(sorted(exported))
+
+
 def register(app: typer.Typer) -> None:
     serve = add_group(app, name="serve", help_text="Run FinanceCoffer services.")
 
@@ -384,10 +444,18 @@ def register(app: typer.Typer) -> None:
 
         log_level = config.log_level.lower()
         if workers > 1:
-            # uvicorn needs an import string to fork workers; each worker reads
-            # the same FC_* environment, so the CLI override is exported first.
-            if options.db_url is not None:
-                os.environ["FC_DB_URL"] = options.db_url
+            # uvicorn needs an import string to fork workers, so each worker
+            # re-runs ``create_app()`` and resolves configuration from the
+            # process environment alone. Publish the configuration this process
+            # already resolved (including the repo ``.env`` and ``--db-url``)
+            # so a worker sees exactly what the single-worker path gets.
+            exported = _export_config_environment(config)
+            _log.debug(
+                "serve api: published %d configuration variables to %d workers: %s",
+                len(exported),
+                workers,
+                ", ".join(exported),
+            )
             uvicorn.run(
                 "financecoffer.api.app:create_app",
                 factory=True,
