@@ -152,17 +152,89 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d api worker
 
 ## 升级与回滚
 
-升级：
+备份与恢复不是手敲几条 `pg_dump`：`scripts/backup.py` 产出可校验的备份，`scripts/restore.py` 只允许恢复到空库，并在恢复后逐项比对。升级前先用前者留一份，回滚到旧数据时用后者。
 
-1. 先备份数据库（`pg_dump`），确认迁移只向前。
+### 备份
+
+```sh
+export FC_DB_URL='postgresql://fcoffer:<password>@127.0.0.1:5432/financecoffer'
+python scripts/backup.py                              # 默认写到 var/backups/<UTC 时间戳>/
+python scripts/backup.py --out /srv/fc-backups/manual-1029
+```
+
+一次备份产出两个文件：
+
+- `dump.pgc`：`pg_dump -Fc` 自定义格式归档，用 `pg_restore` 还原。
+- `manifest.json`：备份时间、git 提交（含工作区是否脏）、迁移版本（`ops.schema_version` 账本）、表 / 索引 / 约束 / 序列清单、**逐表行数与内容校验和**，以及归档文件的字节数与 sha256。
+
+DSN 只从环境变量读取（默认 `FC_DB_URL`，可用 `--dsn-env` 换名），命令行、日志和清单里都不出现密码。`--lock-wait` 控制 `pg_dump` 等锁时长，默认 120 秒。
+
+### pg_dump / pg_restore 依赖
+
+两个脚本调用宿主机的 PostgreSQL 客户端，**大版本需与服务器一致**（本编排为 16）。客户端不在 `PATH` 时脚本不会抛栈，而是打印三条可操作路径：装客户端、用 `PG_BIN` 指向客户端 `bin` 目录、或把整条命令塞进 `PG_DUMP` / `PG_RESTORE`。
+
+宿主机完全没有客户端时，直接用 `postgres` 容器里的那一份——容器内本地连接免密，无需 `-U` / `-h`：
+
+```sh
+docker compose -f deploy/compose.yaml exec -T postgres \
+  pg_dump --format=custom --no-owner --no-privileges --no-password financecoffer > dump.pgc
+
+docker compose -f deploy/compose.yaml exec -T postgres \
+  pg_restore --no-owner --no-privileges --no-password --dbname financecoffer_restore_check < dump.pgc
+```
+
+对应的脚本写法：
+
+```sh
+export PG_DUMP="docker compose -f deploy/compose.yaml exec -T postgres pg_dump"
+export PG_RESTORE="docker compose -f deploy/compose.yaml exec -T postgres pg_restore"
+```
+
+### 恢复
+
+目标库必须先建好、且是空的（`-T template0` 保证不带任何对象）：
+
+```sh
+createdb -h 127.0.0.1 -U fcoffer -T template0 financecoffer_restore_check
+
+export FC_RESTORE_DSN='postgresql://fcoffer:<password>@127.0.0.1:5432/financecoffer_restore_check'
+python scripts/restore.py --backup-dir var/backups/20261029T031500Z \
+  --target-dsn env:FC_RESTORE_DSN
+```
+
+安全规则（任何一条不满足都直接退出，不写入数据）：
+
+- `--target-dsn` 必填。给字面 DSN 或 `env:NAME`，推荐后者：密码不进 shell 历史。
+- 目标必须是**空库**，非空库默认拒绝。
+- 覆盖非空库必须同时给 `--force` 和 `--confirm <库名>`，且 `--confirm` 要逐字敲对库名。
+- `postgres` / `template0` / `template1` 这类集群维护库一律拒绝：它们看起来"空"，但恢复进去只会污染集群的管理库。
+- 拒绝恢复到备份的来源库本身。
+- 动手前先校验 `dump.pgc` 的 sha256 与清单一致；归档被截断或替换时立即停止。
+- `--dry-run` 只跑上面这些检查，不落库。
+
+恢复完成后脚本从恢复后的库重建清单，与备份清单逐项比对（迁移账本、表 / 索引 / 约束 / 序列的数量与对象集合、逐表行数、逐表内容校验和、序列位置），打印差异表并把报告写进 `var/restore-reports/<时间戳>/`。末行 `== 比对结果：N/N 项一致 ==` 且退出码为 0 才算恢复成功；有差异时退出码非 0。
+
+### 空库重建演练
+
+一条命令复跑整条链路：建空库 A → `db migrate` 到 head → 写样例数据 → 备份 → 建空库 B → 恢复 → 比对结构与数据 → 负向用例（故意改一行，比对必须报差异）：
+
+```sh
+python scripts/backup_drill.py
+```
+
+演练只用 `financecoffer_qa_*` 临时库，`financecoffer` / `postgres` / `template0` / `template1` 被硬编码拒绝，结束后自动 DROP 临时库（`--keep` 保留现场）。末行 `== 备份恢复演练：N/N 项通过 ==`，退出码 0 表示通过；过程证据落在被 git 忽略的 `qa_evidence/` 目录。
+
+### 升级流程
+
+1. 先备份：按上文跑 `scripts/backup.py`，确认 `manifest.json` 里的 `schema_version` 与当前库一致，并确认迁移只向前（见 `docs/decisions/DEC-0008-forward-only-migrations.md`）。
 2. 重新构建镜像并打新 tag，更新 Compose 中的镜像 tag。
 3. `docker compose --env-file deploy/.env -f deploy/compose.yaml up -d`。
 4. 观察 `docker compose ps`、`/health`、worker 日志和 Prometheus 告警。
 
-回滚：
+### 回滚流程
 
 1. 把镜像 tag 改回上一个版本，再次 `up -d`。
-2. 迁移是单向的（见 `docs/decisions/DEC-0008-forward-only-migrations.md`），代码可回滚，数据库不自动降级；若新迁移与旧代码不兼容，用升级前的备份恢复。
+2. 迁移是单向的：代码可回滚，数据库不自动降级。若新迁移与旧代码不兼容，用升级前的备份恢复——建一个空库，用 `scripts/restore.py` 还原，确认 `== 比对结果：N/N 项一致 ==` 后再切换连接串。
 3. 回滚后重新检查 `/health` 与 ETL 消费延迟。
 
 ## 本地进程脚本（无 Docker）
