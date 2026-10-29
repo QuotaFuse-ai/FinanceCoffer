@@ -71,7 +71,9 @@ class _Runtime:
         for vector in vectors:
             norm = math.sqrt(sum(value * value for value in vector))
             if not math.isfinite(norm) or norm == 0.0:
-                raise HTTPException(status_code=500, detail="model produced a zero or non-finite vector")
+                raise HTTPException(
+                    status_code=500, detail="model produced a zero or non-finite vector"
+                )
             out.append([value / norm for value in vector])
         return out
 
@@ -110,23 +112,33 @@ def create_app(model_dir: Path, model_name: str, dim: int) -> FastAPI:
         vectors = runtime.encode(texts)
         for vector in vectors:
             if len(vector) != dim:
-                raise HTTPException(status_code=500, detail="embedding dimension does not match configuration")
+                raise HTTPException(
+                    status_code=500,
+                    detail="embedding dimension does not match configuration",
+                )
         return EmbeddingResponse(
             model=runtime.model_name,
-            data=[EmbeddingItem(index=index, embedding=vector) for index, vector in enumerate(vectors)],
+            data=[
+                EmbeddingItem(index=index, embedding=vector)
+                for index, vector in enumerate(vectors)
+            ],
         )
 
     return app
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Serve BGE-M3 embeddings over an OpenAI-compatible API")
+    parser = argparse.ArgumentParser(
+        description="Serve BGE-M3 embeddings over an OpenAI-compatible API"
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR)
     parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME)
     parser.add_argument("--dim", type=int, default=DEFAULT_DIM)
-    parser.add_argument("--threads", type=int, default=int(os.environ.get("FC_EMBEDDING_THREADS", "0")))
+    parser.add_argument(
+        "--threads", type=int, default=int(os.environ.get("FC_EMBEDDING_THREADS", "0"))
+    )
     args = parser.parse_args()
 
     if not args.model_dir.is_dir():
@@ -137,7 +149,12 @@ def main() -> None:
 
     import uvicorn
 
-    uvicorn.run(create_app(args.model_dir, args.model_name, args.dim), host=args.host, port=args.port, log_level="info")
+    uvicorn.run(
+        create_app(args.model_dir, args.model_name, args.dim),
+        host=args.host,
+        port=args.port,
+        log_level="info",
+    )
 
 
 if __name__ == "__main__":

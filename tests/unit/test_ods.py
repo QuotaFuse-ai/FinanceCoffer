@@ -676,7 +676,10 @@ def test_failed_rows_come_from_the_event_log_not_etl_status() -> None:
 
     statement = session.statements[-1]
     sql = " ".join(str(statement.compile(compile_kwargs={"literal_binds": True})).split())
-    assert "JOIN ops.etl_event_log ON ops.etl_event_log.event_id = ods.stock_raw_data.event_id" in sql
+    assert (
+        "JOIN ops.etl_event_log ON ops.etl_event_log.event_id = ods.stock_raw_data.event_id"
+        in sql
+    )
     assert "ops.etl_event_log.status IN ('failed', 'dlq')" in sql
     assert "ods.stock_raw_data.etl_status =" not in sql
 

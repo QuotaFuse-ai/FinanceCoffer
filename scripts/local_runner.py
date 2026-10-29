@@ -25,7 +25,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -236,7 +236,7 @@ def start() -> int:
         "url": f"http://127.0.0.1:{port}",
         "command": command,
         "log": str(LOG_FILE),
-        "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "owner": "scripts/local_runner.py",
     }
     PID_FILE.write_text(f"{process.pid}\n", encoding="utf-8")
@@ -348,7 +348,7 @@ def main(argv: list[str]) -> int:
     if len(argv) != 2 or argv[1] not in {"start", "stop", "status"}:
         print("usage: local_runner.py start|stop|status", file=sys.stderr)
         return 2
-    if sys.version_info < (3, 11):
+    if sys.version_info < (3, 11):  # noqa: UP036 - clear message for unsupported interpreters
         print("ERROR: Python 3.11 or newer is required.", file=sys.stderr)
         return 2
     _load_dotenv()

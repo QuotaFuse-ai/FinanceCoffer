@@ -571,7 +571,9 @@ def test_an_unmarked_event_is_rejected_only_while_the_switch_is_on() -> None:
 
 
 def test_the_tier_reaches_response_meta_only_when_marked() -> None:
-    marked = QueryResult(data={"symbol": "600000"}, source="dws", compliance=ComplianceMark("B", True))
+    marked = QueryResult(
+        data={"symbol": "600000"}, source="dws", compliance=ComplianceMark("B", True)
+    )
     assert marked.meta("trace-1").compliance_tier == "B"
 
     plain = QueryResult(data={"symbol": "600000"}, source="dws")

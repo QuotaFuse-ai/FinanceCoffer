@@ -42,8 +42,8 @@ from financecoffer.db.models.dwd import (
     StockQuoteSnapshot,
     StockRiskEvent,
 )
-from financecoffer.db.models.ops import ArchiveJob, EtlEventLog
 from financecoffer.db.models.ods import StockRawData
+from financecoffer.db.models.ops import ArchiveJob, EtlEventLog
 from financecoffer.db.session import Database
 from financecoffer.etl.processor import process_payload
 from financecoffer.events import compute_event_id

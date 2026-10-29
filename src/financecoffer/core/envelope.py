@@ -13,7 +13,7 @@ callers should rely on across every response.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
@@ -23,11 +23,11 @@ from financecoffer.core.trace import new_trace_id, normalize_trace_id
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _format_timestamp(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 class Meta(BaseModel):
@@ -68,7 +68,7 @@ class Envelope(BaseModel):
     error: ErrorBody | None = None
 
     @model_validator(mode="after")
-    def _check_error_consistency(self) -> "Envelope":
+    def _check_error_consistency(self) -> Envelope:
         if self.ok and self.error is not None:
             raise ValueError("a successful envelope must not carry an error")
         if not self.ok and self.error is None:
@@ -82,10 +82,12 @@ class Envelope(BaseModel):
         *,
         meta: Meta | None = None,
         trace_id: str | None = None,
-    ) -> "Envelope":
+    ) -> Envelope:
         response_meta = meta.model_copy() if meta is not None else Meta()
         if trace_id is not None:
-            response_meta = response_meta.model_copy(update={"trace_id": normalize_trace_id(trace_id)})
+            response_meta = response_meta.model_copy(
+                update={"trace_id": normalize_trace_id(trace_id)}
+            )
         return cls(ok=True, data=data, meta=response_meta, error=None)
 
     @classmethod
@@ -95,10 +97,12 @@ class Envelope(BaseModel):
         *,
         meta: Meta | None = None,
         trace_id: str | None = None,
-    ) -> "Envelope":
+    ) -> Envelope:
         response_meta = meta.model_copy() if meta is not None else Meta()
         if trace_id is not None:
-            response_meta = response_meta.model_copy(update={"trace_id": normalize_trace_id(trace_id)})
+            response_meta = response_meta.model_copy(
+                update={"trace_id": normalize_trace_id(trace_id)}
+            )
         return cls(
             ok=False,
             data=None,

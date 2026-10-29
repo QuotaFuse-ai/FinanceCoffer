@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import Enum, IntEnum
-from typing import Any, Mapping
+from typing import Any
 
 
 class ExitCode(IntEnum):
@@ -20,7 +21,7 @@ class ExitCode(IntEnum):
     INTERRUPTED = 130
 
 
-class ErrorCode(str, Enum):
+class ErrorCode(str, Enum):  # noqa: UP042 - public contract keeps the str mixin explicit
     """Stable machine-readable error codes.
 
     Codes are part of the public contract (CLI, REST, MCP) and must never be

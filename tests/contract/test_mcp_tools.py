@@ -19,7 +19,6 @@ import pytest
 from mcp.client._memory import InMemoryTransport
 from mcp.client.session import ClientSession
 
-from financecoffer.core.errors import InvalidArgumentError
 from financecoffer.mcp.server import create_server
 from financecoffer.mcp.tools import TOOL_SPECS
 from financecoffer.query import STRUCTURED_METRICS, QueryResult, normalize_symbol
@@ -62,7 +61,9 @@ class StubService:
         self, symbol: str, *, metric: str | None = None, year_range: str | None = None
     ) -> QueryResult:
         normalized = normalize_symbol(symbol)
-        self.calls.append(("structured", (normalized,), {"metric": metric, "year_range": year_range}))
+        self.calls.append(
+            ("structured", (normalized,), {"metric": metric, "year_range": year_range})
+        )
         return QueryResult(
             data={"symbol": normalized, "years": [{"year": 2023, "revenue": "123456789.0000"}]},
             source="dws",
@@ -80,7 +81,11 @@ class StubService:
     ) -> QueryResult:
         normalized = normalize_symbol(symbol)
         self.calls.append(
-            ("search_announcements", (normalized, query_text), {"year_range": year_range, "top_k": top_k})
+            (
+                "search_announcements",
+                (normalized, query_text),
+                {"year_range": year_range, "top_k": top_k},
+            )
         )
         return QueryResult(
             data={"symbol": normalized, "count": 1, "results": [{"dwd_ref_id": 1, "score": 0.9}]},
@@ -93,7 +98,11 @@ class StubService:
         normalized = normalize_symbol(symbol)
         self.calls.append(("risk", (normalized,), {"since": since, "limit": limit}))
         return QueryResult(
-            data={"symbol": normalized, "count": 1, "events": [{"id": 1, "risk_type": "goodwill_impairment"}]},
+            data={
+                "symbol": normalized,
+                "count": 1,
+                "events": [{"id": 1, "risk_type": "goodwill_impairment"}],
+            },
             source="dwd",
             quality_status="suspicious",
             confidence="medium",
