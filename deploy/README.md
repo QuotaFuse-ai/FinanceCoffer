@@ -1,8 +1,12 @@
 # 部署说明
 
+> **状态声明（2026-10-29）**：本目录的编排**只在本地 Docker 上做过静态解析和有限的人工实跑**，
+> 从未部署到真实服务器，也从未在生产环境运行过。文中所有「验证」「实跑」都指本地那几次人工操作，
+> 且当时没有留存日志或截图；需要可审计的证据，请按本文档自行复跑。
+
 本目录提供两套运行方式：
 
-- **Compose 编排**：PostgreSQL + pgvector、Redis、MinIO、API、ETL worker，适合具备 Docker 的主机或服务器。
+- **Compose 编排**：PostgreSQL + pgvector、Redis、MinIO、API、ETL worker，适合具备 Docker 的主机。
 - **本地进程脚本**：`scripts/start-local.*` / `stop-local.*` / `status-local.*`，适用于没有 Docker、但四项依赖（PostgreSQL、Redis、MinIO、embedding）已经在跑的开发机。
 
 ## 依赖顺序
@@ -18,6 +22,8 @@ postgres / redis / minio  (健康检查通过)
 ```
 
 - `postgres`、`redis`、`minio` 通过 `condition: service_healthy` 放行。
+- 具体到服务：`api` 等待 `postgres` / `redis` / `minio` 健康，`worker` 只等待 `postgres` / `redis`
+  健康（不等待 `minio`），两者都再等 `migrate` 成功。
 - `migrate` 通过 `condition: service_completed_successfully` 放行。
 - 只有 `api` 发布主机端口，默认绑定 `127.0.0.1:8100`；其余服务仅在编排网络内可见。
 - API 容器内监听 `0.0.0.0`，主机侧仍只绑定回环地址。对外暴露前请在前面加带认证的反向代理。
@@ -125,7 +131,20 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d api worker
 
 ## 容器化实跑记录
 
-本编排已在 Docker（Linux 内核，`docker compose` v2）上完整跑通过一轮，用空数据库从零验证：
+口径先说清楚：这份编排**只在本地做过「compose 静态解析 + 数次人工实跑」**，实跑时没有留存日志、
+截图或脚本，仓库里也没有对应产物。下面是对那几次操作的追述，可追溯性到此为止——它证明不了
+「已上线」，也不能作为生产验证的证据。
+
+| 项 | 记录 |
+| --- | --- |
+| 环境 | 本地 Docker（Linux 内核，`docker compose` v2），不是服务器 |
+| 时间 | 2026-10-28：10:23（+0800）之前跑过一轮（迁移 / ETL / 接口链路），12:10 之前又跑过一轮（worker 存活探针改动）——两个时刻都取自记录它们的提交时间，实跑本身在此之前。无日志留档，精确时刻无法确认 |
+| 应用镜像 | 本地构建的 `financecoffer/app:local`（即 `compose.yaml` 的 `image` 值，未推送，digest 未记录） |
+| PostgreSQL | 本机已有的 pgvector **pg17** 镜像，代替编排固定的 `pgvector/pgvector:pg16`；该镜像的具体 tag 未留档，仓库仍以固定的 `pg16` 为准 |
+| Redis | `redis:7.4-alpine`（编排固定值） |
+| MinIO | **未启动**：`minio/minio` 镜像在各镜像源拉不到（403 / not found），当轮临时去掉 `api`、`worker` 对 `minio` 的 `depends_on` |
+
+那几轮人工操作覆盖的点（全部无日志留档）：
 
 | 验证点 | 结果 |
 | --- | --- |
@@ -143,12 +162,28 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d api worker
 | `/v1/risk/<symbol>` | 200 |
 | worker 存活探针 | 正常时 `healthy`；冻结消费进程后约两分钟转 `unhealthy`（存活键过期 + 连续 3 次探测失败），恢复后自动回到 `healthy` 并继续消费 |
 
-验证时用了两处替代，均不影响编排本身的正确性，但记录在案：
+### 与仓库内 `compose.yaml` 的差异
 
-- `minio/minio` 镜像在该网络下无法拉取（各镜像源 403 / not found），该轮验证把 `api`、`worker` 对 `minio` 的依赖去掉，只跑 postgres / redis / migrate / api / worker。**对象存储在容器内的行为未验证**，本地二进制方式见 `docs/decisions/DEC-0014-object-storage-minio-local-binary.md`。
-- `pgvector/pgvector:pg16` 拉取过慢，改用本机已有的 `pg17` 镜像。迁移与向量列在 pg17 上行为一致，但正式部署仍以 `compose.yaml` 里固定的 `pg16` 为准。
+那一轮用的是一份**临时改过、未入库**的 `compose.yaml`：删掉了 `api`、`worker` 对 `minio` 的
+`depends_on`，只跑 postgres / redis / migrate / api / worker。仓库里提交的版本**仍然依赖 minio**，
+这是有意的：
 
-尚未在容器内验证的两项：MinIO 读写、embedding 调用（宿主机 embedding 服务未在容器网络内应答，`/health` 因此显示 `embedding: unreachable`）。
+- 应用的对象存储走 MinIO（`s3` extra，容器内 `FC_MINIO_ENDPOINT=minio:9000`），去掉依赖会让
+  API 在对象存储健康之前启动；
+- `tests/unit/test_deploy_assets.py::test_startup_order` 已经把「`api` 依赖 `minio` 健康」写成断言，
+  删掉依赖会让该测试直接失败。
+
+所以：**按仓库文件复跑，跑的不是当时那一轮**——会多一个 `minio` 服务，并顺带真正校验 MinIO 的
+启动与健康检查。要复现当时的形态，请自行在本地临时删掉依赖（不要改仓库文件），并接受对象存储
+此时不可用。
+
+### 仍未验证的部分
+
+- **MinIO 读写**：容器内没起 MinIO，S3 路径没在容器里跑过；本地二进制方式见
+  `docs/decisions/DEC-0014-object-storage-minio-local-binary.md`。
+- **embedding 调用**：宿主机 embedding 服务未在容器网络内应答，`/health` 因此显示
+  `embedding: unreachable`。
+- **真实服务器 / 生产环境**：从未部署，没有任何相关记录。
 
 ## 升级与回滚
 
