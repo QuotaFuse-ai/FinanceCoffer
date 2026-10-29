@@ -302,7 +302,7 @@ class OdsService:
         all_failed: bool = False,
         dry_run: bool = False,
     ) -> dict[str, Any]:
-        """Re-deliver ODS records without modifying them.
+        """Reset event-log state for ODS records without modifying them.
 
         A real replay resets ``ops.etl_event_log.status`` to ``received``; it
         never touches ``ods.stock_raw_data``. ``dry_run`` only builds the

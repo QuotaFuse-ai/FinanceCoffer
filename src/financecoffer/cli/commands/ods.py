@@ -1,4 +1,4 @@
-"""ODS commands: inspect the raw layer and re-deliver events.
+"""ODS commands: inspect the raw layer and reset event-log state for replay.
 
 ``show --raw`` is the one command that bypasses the JSON envelope: it writes
 the stored upstream document verbatim (no trailing newline) so callers can

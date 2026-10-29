@@ -170,7 +170,7 @@ fcoffer ods replay <id>|--all-failed [--dry-run]
 - `show --raw` 输出落库时保存的 `raw_text` 原文（末尾换行也保留），不套 JSON 信封，供逐字节比对；
   只有 `raw_file_path` 的历史行没有原文，退化为 `raw_json` 的紧凑 JSON。
 - `stats` 只做计数，不做业务汇总。
-- `replay` 只把 `ops.etl_event_log` 中对应事件重置为 `received` 交给下游消费者，**不修改 ODS 行**；
+- `replay` 只把 `ops.etl_event_log` 中对应事件重置为 `received` 之后**不向 Redis 流重新发布**，需由上游重新投递、消费侧用 `--force` 处理；仍然**不修改 ODS 行**；
   `--all-failed` 选取的是「事件日志状态为 `failed` / `dlq`」的 ODS 行（ODS 的 `etl_status` 落库后不再回填，DEC-0021）；
   `--dry-run` 只打印 manifest（`id` / `event_id` / `data_type` / `symbol` / `source` / `fetch_time` / `etl_status`），零写入。
 
