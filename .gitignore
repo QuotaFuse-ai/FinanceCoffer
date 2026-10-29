@@ -14,3 +14,6 @@ logs/
 # Local launcher overrides (machine-specific paths)
 *.local.cmd
 *.local.sh
+
+# Internal QA process material — local only, never published
+qa_evidence/
