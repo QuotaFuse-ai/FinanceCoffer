@@ -1,6 +1,6 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.13（设计稿）
+版本：v0.14（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
 v0.3 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
@@ -14,6 +14,7 @@ v0.10 §3.11 `archive run` 新增可重复的 `--symbol` / `--table` 作用域�
 v0.11 新增 §3.16 `minio` 命令组（`status|ensure|start|stop`）与 `FC_MINIO_AUTOSTART` 开关：默认 `false`，打开后 `serve api` 在 fork worker 前尽力确保本地存储可用，失败只告警不阻断；路径项无默认值、只在启动时报错；`start` 拒绝非回环端点。
 v0.12 新增 §1.1 输出编码约定：CLI 入口强制 stdout/stderr 为 UTF-8，修复 Windows 重定向下 `--output json` 落盘 GBK 的问题；§3.9 补充指向 `docs/specs/dws-metrics.md` 的口径交叉引用。
 v0.13 数值区间选项第二批（8 项）改为命令内判界并走 `E_INVALID_ARGUMENT` 信封：全局 `--timeout` / `--retries`、`vector embed --batch-size`、`etl consume --batch-size|--block-ms|--claim-idle-ms`、`etl replay --limit`、`db migrate --ahead`。其中 `--batch-size` 上限由 64 统一为客户端上限 32（33–64 从静默夹取改为参数错误）；`etl replay --limit` 保留 1000 条夹取；`db migrate --ahead` 的负值校验前移到迁移执行前。语义判定见 `docs/decisions/DEC-0030`。
+v0.14 命令树总表修正：§2 的 `vector index` 展开为实装的 `vector index create|status|drop`（与 §3.10 对齐）；删除不存在的 `fcoffer dwd announcement list|show`（`dwd` 只有 `show|versions|backfill|verify`，公告元数据当前无 CLI 查询入口）。
 
 ## 1. 全局参数
 
@@ -77,7 +78,7 @@ fcoffer [GLOBAL OPTIONS] COMMAND [ARGS]...
 | ODS | `ods list` / `ods show` / `ods stats` / `ods replay` | 2.1、3.1 | P0 |
 | DWD | `dwd show` / `dwd versions` / `dwd backfill` / `dwd verify` | 2.2、3.2 | P0 |
 | DWS | `dws build` / `dws show` / `dws rebuild` | 2.3 | P0 |
-| 向量 | `vector chunk` / `vector embed` / `vector index` / `vector search` / `vector reindex` / `vector stats` | 2.4、3.4、3.5 | P0 |
+| 向量 | `vector chunk` / `vector embed` / `vector index create\|status\|drop` / `vector search` / `vector reindex` / `vector stats` | 2.4、3.4、3.5 | P0 |
 | 冷热 | `archive run` / `archive status` / `archive restore` / `archive verify` | 3.3、7 | P1 |
 | 对象存储 | `minio status` / `minio ensure` / `minio start` / `minio stop` | 3.3、DEC-0014 | P1 |
 | 查询 | `query structured` / `query risk` / `search announcements` | 4.2 | P0 |
@@ -211,7 +212,6 @@ fcoffer dwd verify [--symbol S] [--report-date D]
 
 - `dwd show` 默认返回 `MAX(version)`；`--version` 可查看历史快照，若同一个版本号在多张 statement 上都存在，按「金额非空多者优先、statement 升序」取一条，`available_versions` 与 `dwd versions` 均按 `(statement, version)` 列出。
 - `dwd verify` 输出 `quality_status` / `confidence` / 金额精度检查结果，不重做勾稽。
-- 公告：`fcoffer dwd announcement list|show` 可查看 `minio_url`、`content_hash`、版本。
 
 ### 3.9 DWS
 
