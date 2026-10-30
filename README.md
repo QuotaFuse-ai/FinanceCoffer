@@ -37,6 +37,7 @@
 > **它只做存储与检索**：不抓取行情、不重复做财务勾稽、不覆盖历史版本。质量字段 `quality_status` / `confidence` / 勾稽结果与合规字段原样透传，DWD 永远保留历史快照，向量检索必须先按 `symbol` 过滤。
 
 - **四层落库**：ODS 只追加、DWD 版本快照、DWS 按股票预计算、向量层切片 + HNSW。
+- **估值双口径**：`snapshot`（厂商 PE 优先，缺失时总市值/年度净利润）与 `reference`（单季扣非净利润 ×4，PB 透传厂商 `pb_mrq`）同时落库，默认 `snapshot`，读取时按 `valuation_basis` 切换；两套都只存不算、缺失只给原因码。
 - **三个 MCP 工具、五条 REST 路由、一棵 `fcoffer` 命令树**，共用同一个 `{ok, data, meta, error}` 返回信封。
 - **本地 embedding**：bge-m3，1024 维，OpenAI 兼容接口，不依赖外部 API、不需要 API Key。
 - **安全检索**：无 `symbol` 直接 `E_INVALID_ARGUMENT`，`top_k` 上限 50，先过滤再走向量索引。
@@ -127,7 +128,7 @@ python -m pytest                 # 单元 + 集成测试
 | --- | --- | --- |
 | `GET` | `/health` | 进程与依赖健康检查 |
 | `GET` | `/metrics` | Prometheus 文本指标 |
-| `GET` | `/v1/structured/{symbol}` | 结构化财报宽表查询 |
+| `GET` | `/v1/structured/{symbol}` | 结构化财报宽表查询，可选 `valuation_basis=snapshot\|reference` |
 | `GET` | `/v1/risk/{symbol}` | 风险事件历史 |
 | `POST` | `/v1/search/announcements` | 带 `symbol` 前置过滤的语义检索 |
 
