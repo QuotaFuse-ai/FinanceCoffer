@@ -1,6 +1,6 @@
 # FinanceCoffer 事件契约（Event Contract v1）
 
-版本：v0.7（草案，待 TickHub 侧确认）
+版本：v0.8（草案，待 TickHub 侧确认）
 适用范围：TickHub-CN / TickHub-US → FinanceCoffer 的唯一数据入口。
 原则：事件即证据。FinanceCoffer 只做校验、落库、索引，不补算、不改写上游判定。
 
@@ -116,7 +116,8 @@
       "report_type": "Q3",
       "statement": "income",
       "amount_revenue": "123456789.0000",
-      "amount_net_profit": "9876543.2100"
+      "amount_net_profit": "9876543.2100",
+      "amount_net_profit_deducted": "9123456.7800"
     },
     "quality_metrics": {
       "confidence": "high",
@@ -130,6 +131,7 @@
 规则：
 
 - 金额一律以**字符串**传输，避免 JSON float 精度丢失；落库转 `NUMERIC(20,4)`。
+- `amount_net_profit_deducted`（可选）是**年初至今累计的扣非净利润**，与上游披露口径一致，不做单季拆分、不做年化；FinanceCoffer 在构建估值时按季度差额还原单季值。缺失时落 `NULL`，**绝不**用 `amount_net_profit` 顶替。
 - `quality_status` 必填，只接受 `normal/suspicious/bad`；`bad` 仍落库但打标，不拒绝。
 - `statement` 可选，取值是上游原样的报表名（`balance` / `income` / `cashflow` 等），最多 20 字符；
   一次财报会按报表分别发布，只有利润表带金额。存档层把它作为业务键的一部分，每个报表各自一条版本链（DEC-0019）。
@@ -166,12 +168,16 @@
       "trade_date": "2023-10-24",
       "close": "7.2500",
       "total_market_cap": "212000000000.0000",
-      "pe_ttm": "5.1200"
+      "pe_ttm": "5.1200",
+      "pb_mrq": "0.8500"
     },
     "quality_metrics": {"confidence": "high", "quality_status": "normal"}
   }
 }
 ```
+
+- `pe_ttm` / `total_market_cap` 用于 `snapshot` 估值口径。
+- `pb_mrq`（可选）是厂商原样的 MRQ 市净率，只做**透传**，供 `reference` 估值口径使用；FinanceCoffer 不用净资产自行计算，缺失即 `NULL`。
 
 ### 3.5 `risk`（文档未定义，为 `get_risk_history` 补齐，见 G-04）
 
@@ -330,3 +336,4 @@
 | 2026-10-28 | v0.5 | `financial.structured_fields` 补可选 `statement`（报表名），版本链按报表切分；可选字段，不升 `schema_version`（DEC-0019） |
 | 2026-10-29 | v0.6 | 版本行与 §7 G-02 的外部协作方表述统一为「TickHub 侧」（DEC-0025，公开仓库规则：`docs/` 不出现团队称谓） |
 | 2026-10-30 | v0.7 | §7 G-13 关闭：上游已补齐 `kline` 与 `financial` 采集（`TickHub-CN: src/tickhub_cn/crawler/store.py:395`、`:448`；`TickHub-US: us_collector/publisher.py:49-51` 声明 8 类 `data_type`），「CN 无 kline / 财报写入方」的假设不再成立 |
+| 2026-10-30 | v0.8 | `financial` 补可选 `amount_net_profit_deducted`（累计扣非净利润），`quote` 补可选 `pb_mrq`（厂商 PB 透传），支撑双口径估值；均为可选字段，不升 `schema_version` |

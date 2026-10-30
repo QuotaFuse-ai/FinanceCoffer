@@ -37,6 +37,8 @@ from financecoffer.core.trace import normalize_trace_id
 from financecoffer.db.connection import connect, resolve_dsn
 
 STRUCTURED_METRICS: tuple[str, ...] = ("revenue", "net_profit", "roe", "pe", "pb")
+VALUATION_BASES: tuple[str, ...] = ("snapshot", "reference")
+DEFAULT_VALUATION_BASIS = "snapshot"
 MAX_YEAR_SPAN = 10
 MAX_TOP_K = 50
 MAX_RISK_LIMIT = 200
@@ -89,6 +91,20 @@ def parse_year_range(value: str | None) -> tuple[int, int] | None:
             details={"field": "year_range", "value": value},
         )
     return start, end
+
+
+def parse_valuation_basis(value: str | None) -> str | None:
+    """Validate ``snapshot|reference``; ``None`` keeps the stored default."""
+
+    if value is None:
+        return None
+    basis = value.strip().lower()
+    if basis not in VALUATION_BASES:
+        raise InvalidArgumentError(
+            "valuation_basis must be snapshot or reference",
+            details={"field": "valuation_basis", "value": value},
+        )
+    return basis
 
 
 def parse_since(value: str | None) -> date | None:
@@ -177,6 +193,56 @@ def _year_items(metrics_json: Any) -> list[dict[str, Any]]:
 def _year_number(record: Mapping[str, Any]) -> int | None:
     year = record.get("year")
     return int(year) if isinstance(year, str) and year.isdigit() else None
+
+
+def _select_valuation(
+    metrics_json: Any, requested_basis: str | None
+) -> dict[str, Any] | None:
+    """Render one valuation basis from the stored wide row.
+
+    Rows built before the two-basis layout carry only the flat snapshot keys;
+    they are folded into a one-basis map so the read path keeps working. A
+    requested basis that the row never built returns ``pe_reason`` set to
+    ``basis_not_built`` rather than an error: the row is valid, it is merely
+    older than the request.
+    """
+
+    if not isinstance(metrics_json, Mapping):
+        return None
+    raw = metrics_json.get("valuation")
+    if not isinstance(raw, Mapping):
+        return None
+    stored_bases = raw.get("bases")
+    if isinstance(stored_bases, Mapping):
+        bases = dict(stored_bases)
+    else:
+        bases = {
+            DEFAULT_VALUATION_BASIS: {
+                key: raw.get(key)
+                for key in ("pe", "pe_source", "pe_reason", "pb", "pb_reason")
+            }
+        }
+    default_basis = raw.get("default_basis")
+    if default_basis not in bases:
+        default_basis = DEFAULT_VALUATION_BASIS
+    chosen = requested_basis or default_basis
+    selected = bases.get(chosen)
+    if not isinstance(selected, Mapping):
+        selected = {"pe": None, "pe_reason": "basis_not_built"}
+    result = dict(selected)
+    result.update(
+        {
+            "basis": chosen,
+            "default_basis": default_basis,
+            "available_bases": [
+                name for name in VALUATION_BASES if name in bases
+            ],
+            "as_of": raw.get("as_of"),
+            "price_date": raw.get("price_date"),
+            "price_close": raw.get("price_close"),
+        }
+    )
+    return result
 
 
 _ETL_QUEUE_SQL = (
@@ -371,9 +437,11 @@ class QueryService:
         *,
         metric: str | None = None,
         year_range: str | None = None,
+        valuation_basis: str | None = None,
     ) -> QueryResult:
         normalized_symbol = normalize_symbol(symbol)
         normalized_metric = self._metric(metric)
+        normalized_basis = parse_valuation_basis(valuation_basis)
         years = parse_year_range(year_range)
 
         columns = [
@@ -426,6 +494,9 @@ class QueryService:
             "risk_summary": row.get("risk_summary"),
             "latest_announcements": row.get("latest_announcements"),
         }
+        valuation = _select_valuation(row.get("metrics_json"), normalized_basis)
+        if valuation is not None:
+            data["valuation"] = valuation
         if normalized_metric is not None:
             data["series"] = [
                 {"year": record.get("year"), "value": record.get(normalized_metric) or 0}

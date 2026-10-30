@@ -59,6 +59,23 @@ METRICS_SCHEMA = "dws.metrics.v1"
 DEFAULT_FISCAL_YEARS = 5
 MAX_FISCAL_YEARS = 10
 
+#: Two valuation bases are computed side by side and the reader picks one:
+#:
+#: * ``reference`` -- mirror of the vibe-astock implementation: PE is
+#:   ``market_cap / (latest single-quarter deducted profit x 4)``, the vendor
+#:   ``pe_ttm`` rides along as a cross-check, PB is the vendor ``pb_mrq``
+#:   passed through, and ROE is not reported (no equity is stored);
+#: * ``snapshot`` -- the original warehouse basis: PE from the quote snapshot
+#:   (vendor ``pe_ttm`` first, else ``market_cap / annual parent net profit``);
+#:   PB and ROE stay ``null`` with a reason.
+#:
+#: Neither basis interpolates, backfills or substitutes one profit line for
+#: the other.
+VALUATION_BASES: tuple[str, ...] = ("snapshot", "reference")
+DEFAULT_VALUATION_BASIS = "snapshot"
+
+_QUARTER_MONTHS = (3, 6, 9, 12)
+
 ANNUAL_REPORT_TYPES = frozenset({"FY", "ANNUAL", "年报", "A"})
 SEVERITIES: tuple[str, ...] = ("critical", "high", "medium", "low")
 RISK_WINDOW_YEARS = 3
@@ -360,6 +377,104 @@ def _pe_for_year(
     return rate(value), None, "market_cap/net_profit"
 
 
+def _newest_report(
+    rows: Sequence[StockFinancialSnapshot],
+) -> StockFinancialSnapshot | None:
+    """Pick the newest revision of the newest report date."""
+
+    if not rows:
+        return None
+    latest = max(row.report_date for row in rows)
+    same_day = [row for row in rows if row.report_date == latest]
+    return max(same_day, key=lambda row: (row.version, row.statement))
+
+
+def _latest_deducted_quarter(
+    rows: Sequence[StockFinancialSnapshot],
+) -> tuple[Decimal | None, str | None, StockFinancialSnapshot | None]:
+    """Split the newest cumulative deducted profit into one quarter.
+
+    Cumulative year-to-date amounts are stored as published, so a single
+    quarter is ``current - previous`` inside the same fiscal year; Q1 is the
+    cumulative itself. When the previous cumulative is missing (or the report
+    period is not a quarter end) the quarter stays unknown instead of being
+    guessed from the parent profit line.
+    """
+
+    carrying = [row for row in rows if row.amount_net_profit_deducted is not None]
+    latest = _newest_report(carrying)
+    if latest is None:
+        return None, "no_deducted_earnings", None
+    month = latest.report_date.month
+    if month not in _QUARTER_MONTHS:
+        return None, "unsupported_report_period", latest
+    if month == 3:
+        return latest.amount_net_profit_deducted, None, latest
+    earlier = [
+        row
+        for row in carrying
+        if row.report_date.year == latest.report_date.year
+        and row.report_date.month == month - 3
+    ]
+    previous = _newest_report(earlier)
+    if previous is None:
+        return None, "no_prior_cumulative", latest
+    return (
+        latest.amount_net_profit_deducted - previous.amount_net_profit_deducted,
+        None,
+        latest,
+    )
+
+
+def _reference_valuation(
+    quote: StockQuoteSnapshot | None,
+    quarter: Decimal | None,
+    quarter_reason: str | None,
+    report: StockFinancialSnapshot | None,
+) -> dict[str, Any]:
+    """The vibe-astock basis: deducted profit x 4, vendor PB, no ROE."""
+
+    pe: float | None = None
+    pe_reason: str | None
+    if quote is None or (quote.close is None and quote.total_market_cap is None):
+        pe_reason = "no_price"
+    elif quarter is None:
+        pe_reason = quarter_reason or "no_deducted_earnings"
+    elif quarter <= 0:
+        pe_reason = "non_positive_earnings"
+    elif quote.total_market_cap is None:
+        pe_reason = "no_market_cap"
+    else:
+        with localcontext() as context:
+            context.prec = 60
+            pe = rate(quote.total_market_cap / (quarter * 4))
+        pe_reason = None
+
+    pb: float | None = None
+    pb_reason: str | None = "no_vendor_pb"
+    if quote is not None and quote.pb_mrq is not None and quote.pb_mrq > 0:
+        pb, pb_reason = rate(quote.pb_mrq), None
+
+    return {
+        "pe": pe,
+        "pe_source": "deducted_annualized" if pe is not None else None,
+        "pe_reason": pe_reason,
+        "pe_cross_source": "quote.pe_ttm",
+        "pe_cross": (
+            rate(quote.pe_ttm)
+            if quote is not None and quote.pe_ttm is not None
+            else None
+        ),
+        "pb": pb,
+        "pb_reason": pb_reason,
+        "roe": None,
+        "roe_reason": "equity_unavailable",
+        "report_date": _iso(report.report_date) if report is not None else None,
+        "report_type": report.report_type if report is not None else None,
+        "quarter_basis": "single_quarter_deducted_x4",
+    }
+
+
 def _risk_summary(
     events: Sequence[StockRiskEvent],
     *,
@@ -624,6 +739,10 @@ class DwsService:
             .limit(1)
         ).first()
 
+        deducted_quarter, deducted_reason, deducted_report = _latest_deducted_quarter(
+            financial_rows
+        )
+
         years: list[dict[str, Any]] = []
         latest_pe: float | None = None
         latest_pe_reason: str | None = None
@@ -676,6 +795,15 @@ class DwsService:
             )
         )
 
+        snapshot_basis = {
+            "pe": latest_pe,
+            "pe_source": latest_pe_source,
+            "pe_reason": latest_pe_reason,
+            "pb": None,
+            "pb_reason": "no_equity",
+            "roe": None,
+            "roe_reason": "equity_unavailable",
+        }
         metrics = {
             "schema": METRICS_SCHEMA,
             "basis": "annual",
@@ -691,11 +819,18 @@ class DwsService:
                 "as_of": day.isoformat(),
                 "price_date": _iso(quote.trade_date) if quote is not None else None,
                 "price_close": money(quote.close) if quote is not None else None,
+                "default_basis": DEFAULT_VALUATION_BASIS,
                 "pe_source": latest_pe_source,
                 "pe": latest_pe,
                 "pe_reason": latest_pe_reason,
                 "pb": None,
                 "pb_reason": "no_equity",
+                "bases": {
+                    "snapshot": snapshot_basis,
+                    "reference": _reference_valuation(
+                        quote, deducted_quarter, deducted_reason, deducted_report
+                    ),
+                },
             },
             "quality": _quality_block(selections, missing),
         }
@@ -800,6 +935,35 @@ class DwsService:
                         for name in ("revenue", "net_profit", "roe", "pe", "pb")
                     ),
                     "a missing year must not carry metric values",
+                )
+
+        valuation = metrics["valuation"]
+        _require(isinstance(valuation, dict), "metrics_json.valuation must be an object")
+        bases = valuation.get("bases")
+        _require(
+            isinstance(bases, dict) and bases,
+            "metrics_json.valuation.bases must be a non-empty object",
+        )
+        _require(
+            valuation.get("default_basis") in bases,
+            "metrics_json.valuation.default_basis must name a built basis",
+        )
+        for name, basis in bases.items():
+            _require(name in VALUATION_BASES, f"unknown valuation basis {name}")
+            _require(isinstance(basis, dict), f"valuation basis {name} must be an object")
+            for metric_name in ("pe", "pb", "roe"):
+                value = basis.get(metric_name)
+                _require(
+                    value is None
+                    or (
+                        isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                    ),
+                    f"valuation basis {name}.{metric_name} must be a number or null",
+                )
+                _require(
+                    value is None or value >= 0,
+                    f"valuation basis {name}.{metric_name} must not be negative",
                 )
 
         risk = values["risk_summary"]

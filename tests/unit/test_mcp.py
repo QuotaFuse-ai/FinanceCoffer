@@ -38,7 +38,7 @@ TOOL_NAMES = [
     "get_risk_history",
 ]
 TOOL_PARAMS = {
-    "query_structured_data": ["symbol", "metric", "year_range"],
+    "query_structured_data": ["symbol", "metric", "year_range", "valuation_basis"],
     "search_announcements_semantically": ["symbol", "query_text", "year_range"],
     "get_risk_history": ["symbol"],
 }
@@ -64,13 +64,22 @@ class FakeService:
         return QueryResult(data=data, source="dws", quality_status="ok", confidence="high")
 
     def structured(
-        self, symbol: str, *, metric: str | None = None, year_range: str | None = None
+        self,
+        symbol: str,
+        *,
+        metric: str | None = None,
+        year_range: str | None = None,
+        valuation_basis: str | None = None,
     ) -> QueryResult:
         normalized = normalize_symbol(symbol)
         return self._answer(
             "structured",
             (normalized,),
-            {"metric": metric, "year_range": year_range},
+            {
+                "metric": metric,
+                "year_range": year_range,
+                "valuation_basis": valuation_basis,
+            },
             {"symbol": normalized, "years": [{"year": 2024}]},
         )
 
@@ -178,7 +187,7 @@ def test_structured_tool_returns_envelope() -> None:
     assert payload["data"]["symbol"] == "600519"
     assert payload["meta"]["trace_id"]
     assert service.calls[0][0] == "structured"
-    assert service.calls[0][2] == {"metric": "roe", "year_range": None}
+    assert service.calls[0][2] == {"metric": "roe", "year_range": None, "valuation_basis": None}
 
 
 def test_search_tool_passes_query_and_defaults_top_k() -> None:
@@ -448,7 +457,7 @@ def test_cli_tools_text_matches_the_spec_signatures() -> None:
 
     assert result.exit_code == 0
     for line in (
-        "query_structured_data(symbol, metric, year_range)",
+        "query_structured_data(symbol, metric, year_range, valuation_basis)",
         "search_announcements_semantically(symbol, query_text, year_range)",
         "get_risk_history(symbol)",
     ):

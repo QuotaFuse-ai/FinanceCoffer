@@ -416,11 +416,17 @@ def create_app(
         symbol: str,
         metric: str | None = None,
         year_range: str | None = None,
+        valuation_basis: str | None = None,
     ) -> JSONResponse:
         tool = "GET /v1/structured/{symbol}"
         started = time.perf_counter()
         try:
-            result = _service(request).structured(symbol, metric=metric, year_range=year_range)
+            result = _service(request).structured(
+                symbol,
+                metric=metric,
+                year_range=year_range,
+                valuation_basis=valuation_basis,
+            )
         except FinanceCofferError as exc:
             _audit_query(
                 request,

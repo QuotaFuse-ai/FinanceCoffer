@@ -2,8 +2,8 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 版本 | v1.0（迁移版） |
-| 日期 | 2026-10-27（口径原文）/ 2026-10-30（迁入 `docs/specs/`） |
+| 版本 | v1.1（双口径估值） |
+| 日期 | 2026-10-27（口径原文）/ 2026-10-30（迁入 `docs/specs/`）/ 2026-10-30（增补 `reference` 口径） |
 | 状态 | 口径已定稿；§8 的 12 项**待人类确认** |
 | 依据 | `docs/specs/financecoffer.md` §4.3／§5、`docs/specs/db-schema.md`、`docs/specs/event-contract.md`、`docs/specs/cli.md`、DEC-0005、DEC-0008、DEC-0010、`src/financecoffer/db/migrations/0005_dws.sql`、`src/financecoffer/db/models/dws.py`、`src/financecoffer/query/service.py` |
 | 产出物性质 | **文档 + SQL 草案**。不含生产代码，不改 `src/`，不建库、不跑数据。 |
@@ -13,6 +13,8 @@
 > 本文迁自原内部任务文档（源提交 `558c053`，834 行／49,175 B；原文档所在的任务目录已从仓库移除）。迁移日期 **2026-10-30**。**本文档为公开口径，取代原任务文档**：内网任务编号、作者署名、机器路径等内部信息已剥离，口径内容、SQL 草案与 §8 待确认清单保持原意未改。
 >
 > 与 `docs/specs/cli.md`、`docs/specs/financecoffer.md` 的相关小节交叉引用；**口径冲突时以本文为准**。
+>
+> **v1.1 变更（2026-10-30）**：估值改为**双口径并存**——构建时同时落 `snapshot`（原 A 方案）与 `reference`（单季扣非年化，对齐外部成熟实现），默认读 `snapshot`，调用方可用 `valuation_basis` 切换。同步新增两个可选上游字段：`financial.amount_net_profit_deducted`（累计扣非净利润）与 `quote.pb_mrq`（上游 PB 透传）。见 §3.2、§4.4.5、§4.4.6。
 
 ---
 
@@ -20,8 +22,8 @@
 
 1. **宽表列已定，口径未定。** `dws.stock_agent_analysis_wide` 的 8 个业务列 + 2 个合规列在 DDL 与 ORM 中完全一致；缺的是每一列"取哪张 DWD 表、按什么规则取"的定义——本文给出。
 2. **营收/净利润可以立刻实现。** `dwd.stock_financial_snapshot` 的 `amount_revenue` / `amount_net_profit`（`NUMERIC(20,4)`）按 `(report_date, report_type)` 取 `MAX(version)` 即得，金额全程 `NUMERIC`，不做任何换算与勾稽。
-3. **ROE / PB 当前无数据可算。** 全库（含事件契约）没有净资产（equity）、总股本（share count）、PB 字段，`dwd.stock_financial_snapshot` 只有营收与净利润两列。本文按"缺数据即 NULL"处理，并把补字段列为待确认（Q-02/Q-03）。**这是本期实现最硬的阻塞点。**
-4. **PE 推荐"构建时快照"（A 方案）**：`as_of` 当日取 `dwd.stock_quote_snapshot` 最新版本，优先透传 `pe_ttm`，缺失时用 `total_market_cap / 年度净利润` 兜底，结果与取价日期一起落 `metrics_json.valuation`。切换条件见 §4.4.3。
+3. **ROE 当前无数据可算；PB 只有厂商透传一条路。** 全库（含事件契约）没有净资产（equity）与总股本（share count）字段。v1.1 起上游可提供累计扣非净利润与厂商 PB（迁移 `0013`），但**缺失时仍按 NULL 处理**，不做替代推算。本文把补字段列为待确认（Q-02/Q-03）。
+4. **估值采用"双口径并存"**：构建时同时落 `snapshot` 与 `reference`，默认读 `snapshot`。`snapshot` 沿用 A 方案（优先透传 `pe_ttm`，缺失时 `total_market_cap / 年度净利润` 兜底）；`reference` 对齐外部成熟实现的"单季扣非净利润 × 4"年化口径（`total_market_cap / (单季扣非 × 4)`），PB 透传上游 `pb_mrq`，ROE 仍为 `null`。两套口径只存不算、缺失即 NULL，**绝不互相替代**。见 §4.4.5。
 5. **文档与实现曾对不上 3 处，已逐条列出（§2.2）**；其中 `docs/specs/cli.md` §3.9 的宽表字段清单已按 DDL 收敛，构建侧一律以 DDL 为准。
 
 ---
@@ -89,7 +91,7 @@
 | **M-04** | `financecoffer.md` §4.3 | 写"`metrics_json` 存过去 5 年逐年指标**数组**"，DDL CHECK 要求 **object**。 | **已收敛**：构建侧一律写 object（内含 `years` 数组）；读取层 `_year_items()` 兼容数组只是容错，不作为构建依据。 |
 | **M-05** | 读取层 `_YEAR_CONTAINERS` | 接受 `metrics` / `years` / `annual` / `fiscal_years` 四种容器名，且对"年份为键的对象"也能读。 | 本文固定用 `years`，其余形态不写，避免同一份数据出现两种形状。 |
 | **M-06** | `0005_dws.sql` | `as_of` 无默认值且 NOT NULL；`fiscal_years` 无构建侧校验。 | build 必须显式写 `as_of`；`fiscal_years` 必须在 1–10，由 CLI `--years` 校验后再落库。 |
-| **M-07** | 全库 | **无净资产、无总股本、无 PB 字段**（`dwd.stock_financial_snapshot` 只有 `amount_revenue` / `amount_net_profit`；`dwd.stock_quote_snapshot` 有 `pe_ttm`、`total_market_cap`，无 PB）。 | ROE / PB 输出 `NULL` + 原因码；补字段进 Q-02/Q-03。 |
+| **M-07** | 全库 | 原**无净资产、无总股本、无 PB 字段**（`dwd.stock_financial_snapshot` 只有 `amount_revenue` / `amount_net_profit`；`dwd.stock_quote_snapshot` 有 `pe_ttm`、`total_market_cap`，无 PB）。 | **部分收敛（v1.1）**：迁移 `0013` 给 financial 补 `amount_net_profit_deducted`、给 quote 补 `pb_mrq`（均为可选上游字段）；净资产仍缺，ROE 与 `snapshot` 口径 PB 继续 `NULL` + 原因码（Q-02/Q-03）。 |
 | **M-08** | `event-contract.md` §3.4 / G-02 / G-13 | `dwd.stock_quote_snapshot` 已建表但**无写入方**（`quote` 事件未定稿，TickHub-CN 也未接 kline/financial）。 | PE 源数据当前为空；本方案定义"A 方案 + 缺失即 NULL"，不阻塞建表。 |
 | **M-09** | `event-contract.md` §3.2 | `report_type` 无枚举、无 `fiscal_year` 字段，样本只有 `"Q3"`；同一 `report_date` 是否可能同时有年报与季报，契约未说明。 | 年度归属按 `report_date` 的年份；年报识别用白名单；两者均进 Q-04/Q-05。 |
 | **M-10** | `0005_dws.sql` | 宽表无 `version` 列，无法保留历史快照。 | 设计如此（DWS 是可重算的派生层）；`as_of` + `built_at` 承担审计。 |
@@ -167,11 +169,37 @@
     "as_of": "2026-10-27",
     "price_date": null,
     "price_close": null,
+    "default_basis": "snapshot",
     "pe_source": null,
     "pe": null,
     "pe_reason": "no_price",
     "pb": null,
-    "pb_reason": "no_equity"
+    "pb_reason": "no_equity",
+    "bases": {
+      "snapshot": {
+        "pe": null,
+        "pe_source": null,
+        "pe_reason": "no_price",
+        "pb": null,
+        "pb_reason": "no_equity",
+        "roe": null,
+        "roe_reason": "equity_unavailable"
+      },
+      "reference": {
+        "pe": null,
+        "pe_source": null,
+        "pe_reason": "no_deducted_earnings",
+        "pe_cross_source": "quote.pe_ttm",
+        "pe_cross": null,
+        "pb": null,
+        "pb_reason": "no_vendor_pb",
+        "roe": null,
+        "roe_reason": "equity_unavailable",
+        "report_date": null,
+        "report_type": null,
+        "quarter_basis": "single_quarter_deducted_x4"
+      }
+    }
   },
   "quality": {
     "bad_years": [],
@@ -185,6 +213,8 @@
 
 - **金额一律字符串**（`"123456789.0000"`），沿用 `event-contract.md` §3.2"金额以字符串传输，避免 JSON float 精度丢失"。JSONB 中不做 float 往返。
 - **比率一律 JSON 数字**，4 位小数：ROE 用小数（`0.0831` = 8.31%），PE/PB 用倍数。
+- `valuation.bases` **必填**：至少含 `snapshot`，通常也含 `reference`；`valuation.default_basis` 必须指向其中一个。顶层 `pe` / `pe_source` / `pe_reason` / `pb` / `pb_reason` 是 `default_basis` 的**镜像**，只供旧读取方兼容；两者冲突时以 `bases[default_basis]` 为准。
+- `reference` 口径的 `pe_cross` 是厂商 `pe_ttm` 的对照值，**不参与** `pe` 的计算；`quarter_basis` 固定为 `single_quarter_deducted_x4`，是口径版本标记。
 - 年份记录内除 `year` 外的 5 个指标键名必须与 `STRUCTURED_METRICS` 完全一致（`revenue` / `net_profit` / `roe` / `pe` / `pb`），否则 `structured()` 读不到（`_year_record` 只拷贝这 5 个键 + `year`）。
 - `roe_reason` / `pe_reason` / `pb_reason` 是补充键：仅当对应指标为 `null` 时给出原因码（`equity_unavailable` / `no_price` / `no_earnings` / `non_positive_earnings` / `out_of_range` / `no_equity`），有值时写 `null`。读取层不消费，供消费方与排查使用；`data_status="missing"` 的年份三者均为 `null`。
 - `report_date` / `report_type` / `version` / `quality_status` / `confidence` 是**溯源字段**：`structured()` 不返回它们，但对账 SQL 直接读 JSONB（§7.3 R1、R5），这是"逐指标可回溯"的抓手，必须写。
@@ -335,7 +365,7 @@ ROE(年) = 净利润(年) / ((期初归母净资产 + 期末归母净资产) / 2
 
 混合方案（备选）：宽表存年末 PE 序列，查询时若有更新的 quote 则覆盖最新年度——代价是查询路径重新引入 JOIN 与不确定性，**不建议在 v1 采用**。
 
-#### 4.4.4 计算与 NULL 规则
+#### 4.4.4 `snapshot` 口径的计算与 NULL 规则
 
 ```
 pe_year(year) =
@@ -352,13 +382,53 @@ pe_year(year) =
 - 除法必须用 `NUMERIC`，`round(..., 4)`，禁止转 float。
 - `valuation.pe` 取**最新年度记录**的 `pe`，并在 `valuation.pe_source` 记录 `"quote.pe_ttm"` 或 `"market_cap/net_profit"`。
 
+#### 4.4.5 `reference` 口径（单季扣非年化）
+
+**动机**：`snapshot` 口径的 PE 完全依赖厂商 `pe_ttm`；上游一旦给的是"最近年度"或口径混杂的值，AI 读到的估值就会漂移。`reference` 用更窄、更可复核的分子分母，并保留厂商值做对照：
+
+```
+quarter        = 单季扣非净利润
+                   Q1: 当期累计
+                   Q2/Q3/Q4: 当期累计 - 同一财年上一季累计
+pe_reference   = round(total_market_cap / (quarter * 4), 4)
+pb_reference   = 上游 quote.pb_mrq（透传）
+roe_reference  = null + "equity_unavailable"
+```
+
+- 扣非净利润来源：`dwd.stock_financial_snapshot.amount_net_profit_deducted`（累计值，迁移 `0013` 新增列），**缺失时绝不回退**到 `amount_net_profit`。
+- 单季拆分只接受季末报告期（3/6/9/12 月）；Q1 直接取累计，其余季度要求同财年上一季累计存在，否则 `pe=null` + `pe_reason="no_prior_cumulative"`。非季末报告期 → `"unsupported_report_period"`。
+- `pe` 的 NULL 原因码：`no_price`（无 quote / 无价无市值）、`no_deducted_earnings`、`no_prior_cumulative`、`unsupported_report_period`、`non_positive_earnings`（单季扣非 ≤ 0）、`no_market_cap`。
+- `pb` 只在 `quote.pb_mrq > 0` 时透传，否则 `null` + `"no_vendor_pb"`；**不自行用净资产计算**。
+- `pe_cross` 保存厂商 `pe_ttm` 原值（可为 `null`），仅作对照，不参与主值计算。
+- `report_date` / `report_type` 记录所用扣非数据的报告期，`quarter_basis="single_quarter_deducted_x4"` 标记年化方式。
+
+#### 4.4.6 读取时选择口径
+
+宽表同时存两套口径，读取方按需选择，**不在查询时重算**：
+
+| 入口 | 参数 | 说明 |
+| --- | --- | --- |
+| CLI | `fcoffer query structured --symbol S --valuation-basis snapshot\|reference` | 缺省取 `default_basis`（`snapshot`），大小写与首尾空格归一化 |
+| REST | `GET /v1/structured/{symbol}?valuation_basis=reference` | 同上；非法值返回 `400 E_INVALID_ARGUMENT`，`details.field="valuation_basis"` |
+| MCP | `query_structured_data(..., valuation_basis="reference")` | 同上，`anyOf` 枚举或 `null` |
+
+返回的 `data.valuation` 固定带 `basis`（实际口径）、`default_basis`、`available_bases`（该行已构建的口径列表），以及该口径的 `pe` / `pb` / `roe` 与原因码。请求一个该行未构建的口径（例如旧宽表只有 `snapshot`）时**不报错**：返回 `pe=null`、`pe_reason="basis_not_built"`，同时 `available_bases` 会说明可选范围。
+
+#### 4.4.7 方案切换条件
+
+`default_basis` 保持 `snapshot`；满足以下任一条件时可改默认（或让客户侧固定选择），并回到本文修订：
+
+#### 4.4.7 默认口径的切换
+
+`default_basis` 保持 `snapshot`。需要改默认口径时，触发条件沿用 §4.4.3 的第 1–3 条，并同步修订本节与 §3.2 的示例；客户侧也可以不全局改默认，只在调用时传 `reference`。
+
 ### 4.5 PB
 
-**公式**：`PB = 总市值 / 归母净资产`。
+**公式**：`PB = 总市值 / 归母净资产`；`reference` 口径另有**透传路径**。
 
-- 分子可得（`total_market_cap`），**分母不存在**（M-07）。
-- 因此 v1：`pb = null`、`pb_reason="no_equity"`，与 ROE 同批阻塞（Q-03）。
-- 若后续上游在 quote 中直接提供 `pb`，按"只存不算"原则直接透传，不再自行计算。
+- 自算路径：分子可得（`total_market_cap`），**分母不存在**（M-07）→ `snapshot` 口径 `pb = null`、`pb_reason="no_equity"`，与 ROE 同批阻塞（Q-03）。
+- 透传路径：quote 事件新增可选 `pb_mrq`（厂商 MRQ 市净率），`reference` 口径按"只存不算"直接透传，且仅当 `pb_mrq > 0`；缺失或非正 → `pb = null`、`pb_reason="no_vendor_pb"`。
+- **两条路径互不替代**：没有 `pb_mrq` 时不拿净资产推算，有 `pb_mrq` 时也不反向填充 `snapshot` 口径。
 
 ### 4.6 `risk_summary` 口径
 
@@ -449,7 +519,8 @@ pe_year(year) =
 3. 金额字段为字符串且匹配 `^-?\d{1,16}(\.\d{1,4})?$`；
 4. 比率字段为数字或 `null`，`pe` 不为负，`pb` 不为负，`roe` 在 `[-10, 10]`（超过视为异常，置 `null` 并记 `roe_reason="out_of_range"`）；
 5. `data_status="missing"` 的记录，5 个指标必须全为 `null`；
-6. `years` 按 `year` 严格降序、无重复年份。
+6. `years` 按 `year` 严格降序、无重复年份；
+7. `valuation.bases` 是非空 object，键名只能是 `snapshot` / `reference`；`default_basis` 必须指向其中一个；每个口径的 `pe` / `pb` / `roe` 为数字或 `null`，有值时不为负。
 
 ### 5.5 合规列
 
@@ -793,9 +864,9 @@ WHERE w.symbol = :'symbol';
 
 | 编号 | 事项 | 需谁决策 | 影响 | 本文默认（未确认时） |
 | --- | --- | --- | --- | --- |
-| **Q-01** | **PE 价格来源（G-07）**：构建时快照（A）还是查询时计算（B） | 客户 / 产品 | PE 是否落库、是否需要每日 `dws build`、MCP 返回是否可复现 | **A**（§4.4.3），满足 §4.4.3 三个条件之一时改 B |
+| **Q-01** | **PE 价格来源（G-07）**：构建时快照（A）还是查询时计算（B） | 客户 / 产品 | PE 是否落库、是否需要每日 `dws build`、MCP 返回是否可复现 | **A**（§4.4.3），满足 §4.4.3 三个条件之一时改 B。v1.1 已落**双口径**（`snapshot` + `reference`），默认 `snapshot`，无需再选存储形态 |
 | **Q-02** | **ROE 分母数据源**：需上游在 `financial` 事件补 `amount_equity`（归母净资产），并把列加到 `dwd.stock_financial_snapshot` | 客户 + TickHub 上游 | ROE **完全不可计算**（当前 100% NULL） | ROE 恒 `null`，`roe_reason="equity_unavailable"` |
-| **Q-03** | **PB 分母数据源**：需净资产或总股本；或由 quote 直接提供 `pb` | 客户 + TickHub 上游 | PB **完全不可计算**（当前 100% NULL） | PB 恒 `null`，`pb_reason="no_equity"` |
+| **Q-03** | **PB 分母数据源**：需净资产或总股本；或由 quote 直接提供 `pb` | 客户 + TickHub 上游 | PB **完全不可计算**（当前 100% NULL） | 自算路径仍缺净资产；v1.1 已给 quote 加 `pb_mrq`，`reference` 口径透传，缺失即 `null` + `no_vendor_pb` |
 | **Q-04** | `report_type` 枚举与年报识别；期间报告是否年化 | 上游（event-contract）+ 产品 | 年度口径正确性；年化会引入造数风险 | 年报白名单 `FY/ANNUAL/年报/A`；期间报告不年化，标 `report_basis="period"` |
 | **Q-05** | 财年归属：用 `report_date` 年份，还是需要独立 `fiscal_year` 字段（3 月披露的 2025 年报） | 上游 + 产品 | 跨年错位会导致整条序列偏移一年 | `year = EXTRACT(year FROM report_date)` |
 | **Q-06** | 是否在宽表落 YoY（同比） | 产品 | 增加一套缺失年/基期规则 | **不落**，由消费方自算 |

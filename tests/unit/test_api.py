@@ -568,7 +568,13 @@ def test_structured_returns_data_with_service_meta() -> None:
     assert payload["meta"]["source"] == "dws"
     assert payload["meta"]["quality_status"] == "normal"
     assert payload["meta"]["compliance_tier"] is None
-    assert service.calls == [("structured", ("600000",), {"metric": None, "year_range": None})]
+    assert service.calls == [
+        (
+            "structured",
+            ("600000",),
+            {"metric": None, "year_range": None, "valuation_basis": None},
+        )
+    ]
 
 
 def test_structured_forwards_query_parameters() -> None:
@@ -576,8 +582,18 @@ def test_structured_forwards_query_parameters() -> None:
     client = _client(service)
 
     client.get("/v1/structured/600000", params={"metric": "revenue", "year_range": "2023-2025"})
+    client.get("/v1/structured/600000", params={"valuation_basis": "reference"})
 
-    assert service.calls[0][2] == {"metric": "revenue", "year_range": "2023-2025"}
+    assert service.calls[0][2] == {
+        "metric": "revenue",
+        "year_range": "2023-2025",
+        "valuation_basis": None,
+    }
+    assert service.calls[1][2] == {
+        "metric": None,
+        "year_range": None,
+        "valuation_basis": "reference",
+    }
 
 
 def test_compliance_tier_reaches_the_envelope_meta() -> None:

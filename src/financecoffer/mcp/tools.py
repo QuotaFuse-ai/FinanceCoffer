@@ -45,6 +45,17 @@ TOOL_SPECS: tuple[dict[str, Any], ...] = (
                     ),
                 },
                 "year_range": dict(_YEAR_RANGE),
+                "valuation_basis": {
+                    "anyOf": [
+                        {"type": "string", "enum": ["snapshot", "reference"]},
+                        {"type": "null"},
+                    ],
+                    "default": None,
+                    "description": (
+                        "Valuation basis for the current PE/PB block: "
+                        "snapshot (default) or reference."
+                    ),
+                },
             },
             "required": ["symbol"],
             "additionalProperties": False,

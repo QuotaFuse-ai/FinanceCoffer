@@ -42,11 +42,21 @@ def register(app: typer.Typer) -> None:
         year_range: str | None = typer.Option(
             None, "--year-range", help="Inclusive window as YYYY-YYYY (max 10 years)."
         ),
+        valuation_basis: str | None = typer.Option(
+            None,
+            "--valuation-basis",
+            help="Valuation basis: snapshot (default) or reference.",
+        ),
     ) -> None:
         options = from_context(ctx)
         started = time.perf_counter()
         try:
-            result = _service(options).structured(symbol, metric=metric, year_range=year_range)
+            result = _service(options).structured(
+                symbol,
+                metric=metric,
+                year_range=year_range,
+                valuation_basis=valuation_basis,
+            )
         except FinanceCofferError as exc:
             log_query_audit(
                 tool="query.structured",

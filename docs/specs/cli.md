@@ -1,6 +1,6 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.14（设计稿）
+版本：v0.15（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
 v0.3 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
@@ -15,6 +15,7 @@ v0.11 新增 §3.16 `minio` 命令组（`status|ensure|start|stop`）与 `FC_MIN
 v0.12 新增 §1.1 输出编码约定：CLI 入口强制 stdout/stderr 为 UTF-8，修复 Windows 重定向下 `--output json` 落盘 GBK 的问题；§3.9 补充指向 `docs/specs/dws-metrics.md` 的口径交叉引用。
 v0.13 数值区间选项第二批（8 项）改为命令内判界并走 `E_INVALID_ARGUMENT` 信封：全局 `--timeout` / `--retries`、`vector embed --batch-size`、`etl consume --batch-size|--block-ms|--claim-idle-ms`、`etl replay --limit`、`db migrate --ahead`。其中 `--batch-size` 上限由 64 统一为客户端上限 32（33–64 从静默夹取改为参数错误）；`etl replay --limit` 保留 1000 条夹取；`db migrate --ahead` 的负值校验前移到迁移执行前。语义判定见 `docs/decisions/DEC-0030`。
 v0.14 命令树总表修正：§2 的 `vector index` 展开为实装的 `vector index create|status|drop`（与 §3.10 对齐）；删除不存在的 `fcoffer dwd announcement list|show`（`dwd` 只有 `show|versions|backfill|verify`，公告元数据当前无 CLI 查询入口）。
+v0.15 `query structured` 与 MCP 工具新增可选 `valuation_basis`（`snapshot|reference`），缺省取宽表 `default_basis`；口径定义见 `docs/specs/dws-metrics.md` §4.4.5–4.4.6。
 
 ## 1. 全局参数
 
@@ -142,7 +143,7 @@ fcoffer mcp tools [--json]
 `mcp tools` 首期固定返回 3 个工具：
 
 ```text
-query_structured_data(symbol, metric, year_range)
+query_structured_data(symbol, metric, year_range, valuation_basis)
 search_announcements_semantically(symbol, query_text, year_range)
 get_risk_history(symbol)
 ```
@@ -282,10 +283,12 @@ fcoffer archive verify [--sample 100]
 ### 3.12 查询（MCP 的 CLI 等价入口）
 
 ```bash
-fcoffer query structured --symbol S --metric revenue|net_profit|roe|pe|pb --year-range 2021-2025
+fcoffer query structured --symbol S --metric revenue|net_profit|roe|pe|pb --year-range 2021-2025 [--valuation-basis snapshot|reference]
 fcoffer query risk --symbol S [--since T] [--limit 50]
 fcoffer search announcements --symbol S --query TEXT --year-range 2023-2025 [--top-k 10]
 ```
+
+`--valuation-basis` 只对 `query structured` 生效：缺省读宽表 `default_basis`（`snapshot`）；传 `reference` 切换为单季扣非年化口径；非法值报 `E_INVALID_ARGUMENT`（`details.field="valuation_basis"`）。返回的 `data.valuation` 带 `basis` / `default_basis` / `available_bases`，请求未构建的口径时返回 `pe_reason="basis_not_built"` 而不是报错。口径全文见 `docs/specs/dws-metrics.md` §4.4.5–4.4.6。
 
 输出信封：
 

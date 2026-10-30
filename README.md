@@ -115,7 +115,7 @@ python -m pytest                 # 单元 + 集成测试
 
 | 工具 | 入参 | 说明 |
 | --- | --- | --- |
-| `query_structured_data` | `symbol, metric, year_range` | 查 DWS 结构化财报宽表 |
+| `query_structured_data` | `symbol, metric, year_range, valuation_basis` | 查 DWS 结构化财报宽表 |
 | `search_announcements_semantically` | `symbol, query_text, year_range` | 先按 symbol / 日期过滤，再算向量距离 |
 | `get_risk_history` | `symbol` | 返回历史风险事件 |
 

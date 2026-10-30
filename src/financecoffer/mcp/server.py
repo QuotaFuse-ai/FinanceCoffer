@@ -183,10 +183,16 @@ def create_server(service: QueryService) -> MCPServer:
         symbol: str,
         metric: str | None = None,
         year_range: str | None = None,
+        valuation_basis: str | None = None,
     ) -> CallToolResult:
         return await _execute(
             tool="query_structured_data",
-            call=lambda: service.structured(symbol, metric=metric, year_range=year_range),
+            call=lambda: service.structured(
+                symbol,
+                metric=metric,
+                year_range=year_range,
+                valuation_basis=valuation_basis,
+            ),
             hits=lambda data: len(data.get("years") or ()),
             symbol=symbol,
             year_range=year_range,
