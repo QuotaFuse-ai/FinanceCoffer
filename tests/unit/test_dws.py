@@ -29,10 +29,12 @@ from financecoffer.dws import (
     years_back,
 )
 from financecoffer.dws.builder import (
+    NON_A_SHARE_REASON,
     _latest_deducted_quarter,
     _pe_for_year,
     _reference_valuation,
     _select_years,
+    is_a_share_symbol,
 )
 
 FETCH = datetime(2026, 10, 27, 1, 0, tzinfo=UTC)
@@ -392,6 +394,31 @@ def test_build_rejects_an_unknown_basis_before_touching_the_database() -> None:
 
     with pytest.raises(InvalidArgumentError, match="valuation_basis"):
         service.build(["600000"], default_basis="vibe")
+
+
+# -- market gate (QUOT-267) --------------------------------------------------
+
+
+def test_market_gate_accepts_the_six_digit_shape_only() -> None:
+    """The gate tests the six-digit shape, not an exchange-prefix whitelist."""
+
+    assert is_a_share_symbol("600000")
+    assert is_a_share_symbol("810024")
+    assert not is_a_share_symbol("AAPL")
+    assert not is_a_share_symbol("BRK.B")
+    assert not is_a_share_symbol("60000")
+    assert not is_a_share_symbol("6000000")
+
+
+def test_build_skips_a_non_a_share_symbol_without_touching_the_database() -> None:
+    service = DwsService(config=Config())
+
+    report = service.build(["AAPL"], as_of="2026-10-27")
+
+    assert report.counts == {"built": 0, "skipped": 1, "failed": 0}
+    assert report.payload()["skipped"] == [{"symbol": "AAPL", "reason": NON_A_SHARE_REASON}]
+    # A skipped symbol is not a failure: `dws rebuild` must still exit 0.
+    assert report.failed is False
 
 
 def test_compose_writes_the_configured_default_basis_and_its_mirror() -> None:

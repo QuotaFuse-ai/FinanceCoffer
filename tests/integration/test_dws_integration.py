@@ -32,6 +32,7 @@ from financecoffer.db.repositories.dwd import (
     QuoteSnapshotRepository,
     RiskEventRepository,
 )
+from financecoffer.db.repositories.dws import AgentAnalysisWideRepository
 from financecoffer.db.session import Database
 from financecoffer.dws import DwsService
 
@@ -833,18 +834,87 @@ def test_an_unknown_symbol_with_no_financial_rows_is_skipped(db: Database) -> No
 def test_build_all_targets_every_symbol_in_dwd(db: Database) -> None:
     symbol = "810030"
     seed_financial(db, symbol, report_date="2025-12-31")
+    seed_financial(db, "AAPL", report_date="2025-12-31")
 
     with db.session() as session:
         symbols = set(session.scalars(select(StockFinancialSnapshot.symbol).distinct()).all())
     assert symbol in symbols
+    assert "AAPL" in symbols
 
     with service(db) as svc:
         report = svc.build(build_all=True, as_of=AS_OF)
 
     assert report.counts["failed"] == 0
+    # Six-digit fixtures are still enumerated and built (QUOT-267: the gate is
+    # the 6-digit shape, not an exchange-prefix whitelist).
     assert symbol in report.payload()["built"]
     for built in report.payload()["built"]:
         assert wide_row(db, built) is not None
+    # A US ticker is enumerated, skipped with a reason, never silently dropped.
+    assert "AAPL" not in report.payload()["built"]
+    assert {"symbol": "AAPL", "reason": "non_a_share_symbol"} in report.payload()["skipped"]
+    assert wide_row(db, "AAPL") is None
+
+
+def test_explicit_us_symbol_on_the_command_line_is_skipped_not_built(db: Database) -> None:
+    """``--symbol`` bypasses the DWD enumeration, so the gate is not in ``_targets``."""
+
+    seed_financial(db, "AAPL", report_date="2025-12-31")
+
+    result = runner.invoke(
+        app, ["--db-url", db.dsn, "dws", "build", "--symbol", "AAPL", "--as-of", AS_OF]
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)["data"]
+    assert payload["counts"] == {"built": 0, "skipped": 1, "failed": 0}
+    assert payload["skipped"] == [{"symbol": "AAPL", "reason": "non_a_share_symbol"}]
+    assert wide_row(db, "AAPL") is None
+
+
+def test_rebuild_with_a_us_row_present_still_exits_zero(db: Database) -> None:
+    seed_financial(db, "AAPL", report_date="2025-12-31")
+    seed_financial(db, "810034", report_date="2025-12-31")
+
+    result = runner.invoke(app, ["--db-url", db.dsn, "dws", "rebuild", "--as-of", AS_OF])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)["data"]
+    assert payload["counts"]["failed"] == 0
+    assert "810034" in payload["built"]
+    assert {"symbol": "AAPL", "reason": "non_a_share_symbol"} in payload["skipped"]
+
+
+def _seed_legacy_wide_row(db: Database, symbol: str) -> None:
+    """Write a wide row the way a pre-gate build left it behind."""
+
+    with db.session_scope() as session:
+        AgentAnalysisWideRepository(session).upsert(
+            symbol=symbol,
+            as_of=datetime(2026, 10, 27, tzinfo=UTC),
+            metrics_json={"schema": "metrics-v1", "valuation": {"pe": 30.0}},
+            risk_summary=None,
+            latest_announcements=None,
+            fiscal_years=5,
+            source_version="dws-1",
+        )
+
+
+def test_show_refuses_to_present_a_legacy_us_valuation_quietly(db: Database) -> None:
+    _seed_legacy_wide_row(db, "AAPL")
+    symbol = "810035"
+    seed_financial(db, symbol, report_date="2025-12-31")
+
+    with service(db) as svc:
+        shown = svc.show("AAPL")
+        assert svc.build([symbol], as_of=AS_OF).counts["built"] == 1
+        a_share = svc.show(symbol)
+
+    # The row itself is not deleted by the gate...
+    assert shown["metrics_json"]["valuation"] == {"pe": 30.0}
+    # ...but its valuation is explicitly unavailable rather than silently shown.
+    assert shown["valuation"] == {"available": False, "reason": "non_a_share_symbol"}
+    assert "valuation" not in a_share
 
 
 def test_dws_models_and_dwd_rows_are_the_only_tables_touched(db: Database) -> None:

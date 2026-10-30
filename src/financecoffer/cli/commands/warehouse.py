@@ -215,11 +215,20 @@ def _register_dws(app: typer.Typer) -> None:
             list[str] | None,
             typer.Option(
                 "--symbol",
-                help="Symbol to build; repeatable. Omit with --all to build every DWD symbol.",
+                help=(
+                    "6-digit A-share code to build; repeatable. A US ticker is skipped "
+                    "(reason: non_a_share_symbol). Omit with --all to build every "
+                    "A-share symbol in DWD."
+                ),
             ),
         ] = None,
         all_symbols: bool = typer.Option(
-            False, "--all", help="Build every symbol present in dwd.stock_financial_snapshot."
+            False,
+            "--all",
+            help=(
+                "Build every 6-digit A-share symbol in dwd.stock_financial_snapshot; "
+                "symbols of any other shape are reported as skipped."
+            ),
         ),
         as_of: str | None = typer.Option(
             None, "--as-of", help="Data cutoff day, YYYY-MM-DD (default: today, UTC)."
@@ -273,7 +282,13 @@ def _register_dws(app: typer.Typer) -> None:
     @dws.command("show", help="Show one built wide-table row.")
     def show(
         ctx: typer.Context,
-        symbol: str = typer.Argument(..., help="A-share code or US ticker."),
+        symbol: str = typer.Argument(
+            ...,
+            help=(
+                "6-digit A-share code. A US ticker's pre-gate row is still returned, "
+                "with valuation.available=false."
+            ),
+        ),
     ) -> None:
         options = from_context(ctx)
         service = _service(options)
