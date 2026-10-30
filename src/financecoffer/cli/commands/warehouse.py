@@ -8,7 +8,7 @@ from typing import Annotated, Any
 import typer
 from sqlalchemy.exc import SQLAlchemyError
 
-from financecoffer.cli.options import GlobalOptions, from_context
+from financecoffer.cli.options import GlobalOptions, from_context, parse_int_option
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
 from financecoffer.config.loader import load_cli_config
@@ -62,18 +62,24 @@ def _register_dwd(app: typer.Typer) -> None:
         report_type: str | None = typer.Option(
             None, "--report-type", help="Report type label, e.g. income or Q3 (default: latest)."
         ),
-        version: int | None = typer.Option(
-            None, "--version", min=1, help="Snapshot version (default: MAX(version))."
+        version: str | None = typer.Option(
+            None, "--version", help="Snapshot version (>= 1; default: MAX(version))."
         ),
     ) -> None:
         options = from_context(ctx)
+        try:
+            version_value = (
+                None if version is None else parse_int_option(version, field="version", minimum=1)
+            )
+        except FinanceCofferError as exc:
+            emit_failure(options, exc)
         data = _run_dwd(
             options,
             lambda service: service.show(
                 symbol,
                 report_date=report_date,
                 report_type=report_type,
-                version=version,
+                version=version_value,
             ),
         )
         emit_success(options, data, meta=Meta(source="dwd"))
@@ -216,15 +222,19 @@ def _register_dws(app: typer.Typer) -> None:
         as_of: str | None = typer.Option(
             None, "--as-of", help="Data cutoff day, YYYY-MM-DD (default: today, UTC)."
         ),
-        years: int = typer.Option(
-            DEFAULT_FISCAL_YEARS,
+        years: str = typer.Option(
+            str(DEFAULT_FISCAL_YEARS),
             "--years",
-            min=1,
-            max=MAX_FISCAL_YEARS,
-            help="Fiscal-year window, newest year first.",
+            help=f"Fiscal-year window, newest year first (1-{MAX_FISCAL_YEARS}).",
         ),
     ) -> None:
         options = from_context(ctx)
+        try:
+            years_value = parse_int_option(
+                years, field="years", minimum=1, maximum=MAX_FISCAL_YEARS
+            )
+        except FinanceCofferError as exc:
+            emit_failure(options, exc)
         if symbol and all_symbols:
             emit_failure(
                 options,
@@ -246,7 +256,7 @@ def _register_dws(app: typer.Typer) -> None:
             symbols=symbol or [],
             build_all=all_symbols,
             as_of=as_of,
-            years=years,
+            years=years_value,
         )
 
     @dws.command("show", help="Show one built wide-table row.")
@@ -270,21 +280,25 @@ def _register_dws(app: typer.Typer) -> None:
         as_of: str | None = typer.Option(
             None, "--as-of", help="Data cutoff day, YYYY-MM-DD (default: today, UTC)."
         ),
-        years: int = typer.Option(
-            DEFAULT_FISCAL_YEARS,
+        years: str = typer.Option(
+            str(DEFAULT_FISCAL_YEARS),
             "--years",
-            min=1,
-            max=MAX_FISCAL_YEARS,
-            help="Fiscal-year window, newest year first.",
+            help=f"Fiscal-year window, newest year first (1-{MAX_FISCAL_YEARS}).",
         ),
     ) -> None:
         options = from_context(ctx)
+        try:
+            years_value = parse_int_option(
+                years, field="years", minimum=1, maximum=MAX_FISCAL_YEARS
+            )
+        except FinanceCofferError as exc:
+            emit_failure(options, exc)
         _run_build(
             options,
             symbols=[],
             build_all=True,
             as_of=as_of,
-            years=years,
+            years=years_value,
         )
 
 
