@@ -175,16 +175,20 @@ FinanceCoffer/
 ├── .env.example          # FC_* 配置模板（无真实凭据）
 ├── src/financecoffer/
 │   ├── api/              # FastAPI 路由与限流
+│   ├── archive/          # 冷热判定、MinIO 转存与恢复
 │   ├── cli/              # Typer 命令树
 │   ├── config/           # 配置加载（默认值 → .env → 环境变量 → 显式参数）
 │   ├── core/             # 错误码、日志、返回信封
 │   ├── db/               # 迁移、ORM 模型、仓储、分区
 │   ├── dwd/              # DWD 版本快照写入
 │   ├── dws/              # DWS 宽表构建
+│   ├── etl/              # Redis Stream 消费、幂等、重试、死信、位点
 │   ├── events/           # 事件契约校验
 │   ├── mcp/              # MCP Server 与三个工具
 │   ├── ods/              # ODS 落库、重放、分区维护
-│   └── query/            # 结构化 / 风险 / 语义检索服务
+│   ├── ops/              # 本机运维（MinIO 进程托管）
+│   ├── query/            # 结构化 / 风险 / 语义检索服务
+│   └── vector/           # 切片、embedding、HNSW 检索
 ├── tests/
 │   ├── unit/             # 单元测试
 │   ├── integration/      # 真实 PostgreSQL 集成测试

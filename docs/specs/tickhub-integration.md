@@ -1,9 +1,11 @@
 # TickHub 侧改造方案（CN 内嵌钩子 / US 外挂采集器）
 
-版本：v0.3（2026-10-29）
+版本：v0.4（2026-10-30）
 上游契约：`docs/specs/event-contract.md` v0.3
 边界：FinanceCoffer 只消费，不做调度、不抓取、不回查上游库。
 
+> v0.4 变更：按上游现行快照刷新 §2.1 与 §4.4——TickHub-CN 已实装 `financials` / `kline` / `quote` 采集与事件发布（`store.py` 的 `insert_financial_reports` / `insert_klines` / `insert_quotes`），「爬虫不产出财报与 K 线」的旧结论作废。
+>
 > v0.3 变更：§8 任务拆分表删除内部任务编号列（改用任务内容作行标识），「归属」列改为部署口径（`部署配置` / `两端`）；依据公开仓库规则，`docs/` 不出现内部任务编号与团队称谓（DEC-0025）。
 
 ## 1. 总体结构
@@ -34,15 +36,15 @@ flowchart LR
 | 项 | 事实 |
 | --- | --- |
 | 爬虫目录 | `src/tickhub_cn/crawler/`：`daemon.py`、`jobs.py`、`runner.py`、`store.py`、`cleaner.py`；**没有 `tasks/` 子目录** |
-| 任务集合 | `jobs.py: TASKS = ("announcements", "reports", "risks", "northbound")` |
-| 落盘入口 | `store.py`：`insert_announcements` / `insert_reports` / `insert_risks` / `insert_northbound`，均为 `INSERT OR IGNORE`（北向为普通 `INSERT`） |
-| 归档库 | `var/archive/tickhub.db`；建了 `kline`、`financial_report`、`shareholder` 表，但**没有代码写入** |
-| 调度 | `daemon.py` 用 APScheduler，`OFFLINE_CRAWLER_CRON`（默认 `0 2 * * *`） |
+| 任务集合 | `jobs.py`：`DEFAULT_TASKS = ("announcements", "reports", "risks", "northbound")`，`MARKET_TASKS = ("financials", "kline", "quote")`，`TASKS` 为两者之和（7 类） |
+| 落盘入口 | `store.py`：`insert_announcements` / `insert_reports` / `insert_risks` / `insert_northbound`，以及 `insert_financial_reports` / `insert_klines` / `insert_quotes`；除北向按 `(trade_date, channel)` upsert 外，均为 `INSERT OR IGNORE` |
+| 归档库 | `var/archive/tickhub.db`；`kline` / `financial_report` / `quote_snapshot` 已有写入方（`insert_klines` / `insert_financial_reports` / `insert_quotes`），`shareholder` 仍只有建表、无代码写入 |
+| 调度 | `daemon.py` 用 APScheduler：默认轮次 `OFFLINE_CRAWLER_CRON`（默认 `0 2 * * *`）；行情类各自独立 cron——`OFFLINE_CRAWLER_FINANCIALS_CRON`（默认 `0 18 * * 6`）、`OFFLINE_CRAWLER_FINANCIALS_SEASON_CRON`（财报季工作日）、`OFFLINE_CRAWLER_KLINE_CRON`（默认 `15 15 * * 1-5`）、`OFFLINE_CRAWLER_QUOTE_CRON`（默认 `10 15 * * 1-5`） |
 | 缓存 Redis | 已有 `REDIS_URL`（默认 `redis://127.0.0.1:6379/0`） |
 | 触发接口 | `POST /api/crawler/run`（`x-admin-token`，admin 默认绑回环 8787） |
 | 可观测 | `GET /api/crawler/status`、`/api/crawler/jobs`；`crawl_task`、`source_health` 表 |
 
-结论：钩子必须挂在 `store.py` 的四个 insert 方法上，不能按任务逐个埋点；且**爬虫目前不产出财报与 K 线**。
+结论：钩子必须挂在 `store.py` 对应的 insert 方法上，不能按任务逐个埋点；财报、K 线与收盘行情已由 `insert_financial_reports` / `insert_klines` / `insert_quotes` 写入并各自发布事件（见 §4.4），`shareholder` 仍是空表。
 
 ### 2.2 TickHub-US
 
@@ -161,20 +163,21 @@ def insert_announcements(self, rows, *, source="cninfo") -> int:
 - `run_id = f"cn-{date}-{task}"`；`status = ok|partial|failed`；`items = result.inserted`。
 - 建议另加一个 5 分钟定时心跳（daemon 空闲时也发），用于识别「进程活着但卡住」；与轮次心跳靠 `run_id` 区分。
 
-### 4.4 补齐财报与 K 线（必做，否则 DWD/DWS 无数据）
+### 4.4 财报、K 线与收盘行情（采集已实装）
 
-现有爬虫不写 `financial_report` / `kline`。两种做法：
+CN 爬虫已具备 `financials` / `kline` / `quote` 三类行情采集，写入归档库与发布事件走同一条路径：
 
-**推荐：在 CN 爬虫新增两个任务**
+| 任务 | 写入方法 | 事件构造 | 默认调度 | 说明 |
+| --- | --- | --- | --- | --- |
+| `financials` | `insert_financial_reports`（按 `code + statement + report_date` 去重） | `_financial_event`（`data_type="financial"`，`provider="eastmoney"`） | `OFFLINE_CRAWLER_FINANCIALS_CRON`（默认周六 18:00）+ 财报季 cron | 三表落 `financial_report`；勾稽结果写入 `quality_metrics.balance_check_result` |
+| `kline` | `insert_klines`（按 `code + period + adjust + trade_date`） | `_kline_event`（`data_type="kline"`，`provider="tencent"`） | `OFFLINE_CRAWLER_KLINE_CRON`（默认交易日 15:15） | 日线前复权，范围取行情自选池 |
+| `quote` | `insert_quotes`（每个 `code + trade_date` 一条） | `_quote_event`（`data_type="quote"`，`provider="tencent"`） | `OFFLINE_CRAWLER_QUOTE_CRON`（默认交易日 15:10） | 收盘快照，PE/PB 原料（G-05） |
 
-| 新任务 | 调用 | 频率 | 说明 |
-| --- | --- | --- | --- |
-| `financials` | `eastmoney_financial_report(code, statement=income/balance/cashflow, periods=8)` | 每周一次（财报季每日） | 写 `financial_report` 表，按 `report_date\|statement` 去重；`finance_crosscheck` 结果写入 `quality_metrics.balance_check_result` |
-| `kline` | `tencent_kline(code, period="day", adjust="qfq")` | 每个交易日收盘后 | 只做日线前复权；首期只覆盖自选池，不做全市场 |
+三个任务只采自选池（`resolve_market_watchlist`），且都只在新行入库时发布事件，因此剩余工作不是新增采集，而是按需扩覆盖与调优：
 
-**备选：sidecar 拉取**（与 US 同构）——不改 CN 核心，但会把调度、限流、去重留在外部，长期维护成本更高。
-
-配套：`quote` 事件用 `tencent_quote_batch` 拉自选池收盘快照，作为 PE/PB 的原料（G-05）。
+- 覆盖范围：默认受 `OFFLINE_CRAWLER_MAX_CODES` 限制；扩到全市场前先评估上游限流与单轮耗时。
+- 频率：财报季复用已有 season cron；K 线 / 行情沿用收盘后的默认 cron 即可。
+- 口径：K 线只写日线前复权；周/月线优先在 DWS 聚合，不在采集端新增周期。
 
 ### 4.5 调度
 
