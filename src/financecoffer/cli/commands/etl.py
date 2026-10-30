@@ -10,7 +10,7 @@ from typing import Any, NoReturn
 import typer
 from sqlalchemy.exc import SQLAlchemyError
 
-from financecoffer.cli.options import GlobalOptions, from_context
+from financecoffer.cli.options import GlobalOptions, from_context, parse_int_option
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
 from financecoffer.config.loader import load_cli_config
@@ -35,6 +35,8 @@ from financecoffer.etl.status import collect_status
 _META = Meta(source="etl")
 
 _CONSUMER_BACKENDS = ("redis", "kafka", "webhook")
+_MAX_CONSUME_BATCH = 1000
+_MAX_BLOCK_MS = 60_000
 
 
 def _config(options: GlobalOptions) -> Config:
@@ -180,24 +182,43 @@ def register(app: typer.Typer) -> None:
         once: bool = typer.Option(
             False, "--once", help="Handle at most one batch, then exit."
         ),
-        batch_size: int | None = typer.Option(
-            None, "--batch-size", min=1, max=1000, help="Entries per read."
+        batch_size: str | None = typer.Option(
+            None, "--batch-size", help=f"Entries per read (1-{_MAX_CONSUME_BATCH})."
         ),
-        block_ms: int | None = typer.Option(
+        block_ms: str | None = typer.Option(
             None,
             "--block-ms",
-            min=0,
-            max=60_000,
-            help="XREADGROUP block time; 0 disables blocking.",
+            help=f"XREADGROUP block time in ms (0-{_MAX_BLOCK_MS}); 0 disables blocking.",
         ),
-        claim_idle_ms: int | None = typer.Option(
+        claim_idle_ms: str | None = typer.Option(
             None,
             "--claim-idle-ms",
-            min=0,
-            help="Reclaim entries idle longer than this; 0 disables XAUTOCLAIM.",
+            help="Reclaim entries idle longer than this (>= 0); 0 disables XAUTOCLAIM.",
         ),
     ) -> None:
         options = from_context(ctx)
+        try:
+            batch_value = (
+                None
+                if batch_size is None
+                else parse_int_option(
+                    batch_size, field="batch_size", minimum=1, maximum=_MAX_CONSUME_BATCH
+                )
+            )
+            block_value = (
+                None
+                if block_ms is None
+                else parse_int_option(
+                    block_ms, field="block_ms", minimum=0, maximum=_MAX_BLOCK_MS
+                )
+            )
+            claim_value = (
+                None
+                if claim_idle_ms is None
+                else parse_int_option(claim_idle_ms, field="claim_idle_ms", minimum=0)
+            )
+        except FinanceCofferError as exc:
+            emit_failure(options, exc)
         config = _config(options)
         if consumer not in _CONSUMER_BACKENDS:
             emit_failure(
@@ -230,9 +251,9 @@ def register(app: typer.Typer) -> None:
             with graceful_signals(instance):
                 report = instance.run(
                     once=once,
-                    batch_size=batch_size,
-                    block_ms=0 if once and block_ms is None else block_ms,
-                    claim_idle_ms=claim_idle_ms,
+                    batch_size=batch_value,
+                    block_ms=0 if once and block_value is None else block_value,
+                    claim_idle_ms=claim_value,
                 )
             data = report.as_dict()
             data["metrics"] = METRICS.snapshot()
@@ -317,12 +338,24 @@ def register(app: typer.Typer) -> None:
         until: str | None = typer.Option(
             None, "--until", help="Latest fetch_time, inclusive for a date (YYYY-MM-DD)."
         ),
-        limit: int | None = typer.Option(None, "--limit", min=1, help="Maximum records."),
+        limit: str | None = typer.Option(
+            None,
+            "--limit",
+            help="Maximum records (>= 1); values above the replay cap are reduced to it.",
+        ),
         dry_run: bool = typer.Option(
             False, "--dry-run", help="Only print the manifest; change nothing."
         ),
     ) -> None:
         options = from_context(ctx)
+        try:
+            limit_value = (
+                None
+                if limit is None
+                else parse_int_option(limit, field="limit", minimum=1)
+            )
+        except FinanceCofferError as exc:
+            emit_failure(options, exc)
         config = _config(options)
         if not from_ods:
             emit_failure(
@@ -342,7 +375,7 @@ def register(app: typer.Typer) -> None:
                 symbol=symbol,
                 since=since,
                 until=until,
-                limit=limit,
+                limit=limit_value,
                 dry_run=dry_run,
             ),
         )

@@ -673,13 +673,13 @@ def test_embed_partial_failure_exits_with_eight(fake_service: type[_FakeService]
         missing=1,
     )
 
-    result = runner.invoke(app, ["vector", "embed", "--batch-size", "64"])
+    result = runner.invoke(app, ["vector", "embed", "--batch-size", "32"])
 
     assert result.exit_code == 8
     payload = json.loads(result.stdout)
     assert payload["error"]["code"] == "E_PARTIAL_FAILURE"
     assert payload["error"]["details"]["missing_chunks"] == 1
-    assert fake_service.instances[0].kwargs["batch_size"] == 64
+    assert fake_service.instances[0].kwargs["batch_size"] == 32
 
 
 def test_database_errors_become_storage_errors(fake_service: type[_FakeService]) -> None:

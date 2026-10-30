@@ -326,6 +326,11 @@ class MigrationRunner:
         ahead_months: int = 3,
         create_partitions: bool = True,
     ) -> MigrationReport:
+        if ahead_months < 0:
+            raise InvalidArgumentError(
+                "--ahead must be >= 0",
+                details={"field": "ahead", "value": ahead_months},
+            )
         migrations = self._migrations()
         target = _resolve_target(revision, migrations)
 

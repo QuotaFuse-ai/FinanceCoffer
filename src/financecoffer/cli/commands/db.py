@@ -32,11 +32,15 @@ def register(app: typer.Typer) -> None:
         sql: bool = typer.Option(
             False, "--sql", help="Print the ordered migration SQL without connecting."
         ),
-        ahead: int = typer.Option(
-            3, "--ahead", min=0, help="Pre-create ODS partitions for N months ahead."
+        ahead: str = typer.Option(
+            "3", "--ahead", help="Pre-create ODS partitions for N months ahead (>= 0)."
         ),
     ) -> None:
         options = from_context(ctx)
+        try:
+            ahead_value = parse_int_option(ahead, field="ahead", minimum=0)
+        except FinanceCofferError as exc:
+            emit_failure(options, exc)
         if sql:
             typer.echo(render_sql(), nl=False)
             return
@@ -45,7 +49,7 @@ def register(app: typer.Typer) -> None:
                 resolve_cli_dsn(options.db_url), timeout=options.timeout
             ).apply(
                 revision=revision,
-                ahead_months=ahead,
+                ahead_months=ahead_value,
             )
         except FinanceCofferError as exc:
             emit_failure(options, exc)
