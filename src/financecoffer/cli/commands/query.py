@@ -6,7 +6,7 @@ import time
 
 import typer
 
-from financecoffer.cli.options import GlobalOptions, from_context
+from financecoffer.cli.options import GlobalOptions, from_context, parse_int_option
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
 from financecoffer.config.loader import load_cli_config
@@ -73,14 +73,18 @@ def register(app: typer.Typer) -> None:
         ctx: typer.Context,
         symbol: str = typer.Option(..., "--symbol", help="A-share code or US ticker."),
         since: str | None = typer.Option(None, "--since", help="Earliest occur_date, YYYY-MM-DD."),
-        limit: int = typer.Option(
-            50, "--limit", min=1, max=MAX_RISK_LIMIT, help="Maximum number of events."
+        limit: str = typer.Option(
+            "50", "--limit", help=f"Maximum number of events (1-{MAX_RISK_LIMIT})."
         ),
     ) -> None:
         options = from_context(ctx)
         started = time.perf_counter()
+        limit_value: int | None = None
         try:
-            result = _service(options).risk(symbol, since=since, limit=limit)
+            limit_value = parse_int_option(
+                limit, field="limit", minimum=1, maximum=MAX_RISK_LIMIT
+            )
+            result = _service(options).risk(symbol, since=since, limit=limit_value)
         except FinanceCofferError as exc:
             log_query_audit(
                 tool="query.risk",
@@ -112,13 +116,19 @@ def register(app: typer.Typer) -> None:
         year_range: str | None = typer.Option(
             None, "--year-range", help="Inclusive window as YYYY-YYYY (default: last 5 years)."
         ),
-        top_k: int = typer.Option(10, "--top-k", min=1, max=MAX_TOP_K, help="Maximum hits."),
+        top_k: str = typer.Option(
+            "10", "--top-k", help=f"Maximum hits (1-{MAX_TOP_K})."
+        ),
     ) -> None:
         options = from_context(ctx)
         started = time.perf_counter()
+        top_k_value: int | None = None
         try:
+            top_k_value = parse_int_option(
+                top_k, field="top_k", minimum=1, maximum=MAX_TOP_K
+            )
             result = _service(options).search_announcements(
-                symbol, query_text, year_range=year_range, top_k=top_k
+                symbol, query_text, year_range=year_range, top_k=top_k_value
             )
         except FinanceCofferError as exc:
             log_query_audit(
@@ -126,7 +136,7 @@ def register(app: typer.Typer) -> None:
                 trace_id=options.trace_id,
                 symbol=symbol,
                 year_range=year_range,
-                top_k=top_k,
+                top_k=top_k_value,
                 elapsed_ms=_ms(started),
                 outcome=exc.code.value,
             )
@@ -136,7 +146,7 @@ def register(app: typer.Typer) -> None:
             trace_id=options.trace_id,
             symbol=symbol,
             year_range=year_range,
-            top_k=top_k,
+            top_k=top_k_value,
             hits=result.data.get("count"),
             elapsed_ms=_ms(started),
             outcome="ok",

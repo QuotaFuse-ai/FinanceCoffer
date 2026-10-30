@@ -14,7 +14,7 @@ from typing import Any
 import typer
 from sqlalchemy.exc import SQLAlchemyError
 
-from financecoffer.cli.options import GlobalOptions, from_context
+from financecoffer.cli.options import GlobalOptions, from_context, parse_int_option
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
 from financecoffer.config.loader import load_cli_config
@@ -131,14 +131,14 @@ def register(app: typer.Typer) -> None:
         all_symbols: bool = typer.Option(
             False, "--all", help="Plan chunks for every announcement in DWD."
         ),
-        limit: int = typer.Option(
-            100, "--limit", min=1, max=MAX_LIMIT, help="Maximum announcements to plan."
+        limit: str = typer.Option(
+            "100", "--limit", help=f"Maximum announcements to plan (1-{MAX_LIMIT})."
         ),
-        chunk_size: int = typer.Option(
-            DEFAULT_CHUNK_SIZE, "--chunk-size", min=1, help="Tokens per chunk."
+        chunk_size: str = typer.Option(
+            str(DEFAULT_CHUNK_SIZE), "--chunk-size", help="Tokens per chunk (>= 1)."
         ),
-        overlap: int = typer.Option(
-            DEFAULT_OVERLAP, "--overlap", min=0, help="Tokens shared by neighbours."
+        overlap: str = typer.Option(
+            str(DEFAULT_OVERLAP), "--overlap", help="Tokens shared by neighbours (>= 0)."
         ),
         dry_run: bool = typer.Option(
             False,
@@ -147,17 +147,23 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         options = from_context(ctx)
+        try:
+            limit_value = parse_int_option(limit, field="limit", minimum=1, maximum=MAX_LIMIT)
+            chunk_value = parse_int_option(chunk_size, field="chunk_size", minimum=1)
+            overlap_value = parse_int_option(overlap, field="overlap", minimum=0)
+        except FinanceCofferError as exc:
+            emit_failure(options, exc)
         canonical = _selection(options, symbol=symbol, all_symbols=all_symbols)
         payload = _run(
             options,
             lambda service: service.chunk_preview(
                 canonical,
-                limit=limit,
-                chunk_size=chunk_size,
-                overlap=overlap,
+                limit=limit_value,
+                chunk_size=chunk_value,
+                overlap=overlap_value,
             ),
-            chunk_size=chunk_size,
-            overlap=overlap,
+            chunk_size=chunk_value,
+            overlap=overlap_value,
         )
         emit_success(options, payload, meta=Meta(source="vector"))
 
@@ -165,8 +171,8 @@ def register(app: typer.Typer) -> None:
     def embed(
         ctx: typer.Context,
         symbol: str | None = typer.Option(None, "--symbol", help="Limit to one symbol."),
-        limit: int = typer.Option(
-            50, "--limit", min=1, max=MAX_LIMIT, help="Maximum announcements to embed."
+        limit: str = typer.Option(
+            "50", "--limit", help=f"Maximum announcements to embed (1-{MAX_LIMIT})."
         ),
         pending: bool = typer.Option(
             True,
@@ -183,26 +189,32 @@ def register(app: typer.Typer) -> None:
         model: str | None = typer.Option(
             None, "--model", help="Embedding model label (default: FC_EMBEDDING_MODEL)."
         ),
-        chunk_size: int = typer.Option(
-            DEFAULT_CHUNK_SIZE, "--chunk-size", min=1, help="Tokens per chunk."
+        chunk_size: str = typer.Option(
+            str(DEFAULT_CHUNK_SIZE), "--chunk-size", help="Tokens per chunk (>= 1)."
         ),
-        overlap: int = typer.Option(
-            DEFAULT_OVERLAP, "--overlap", min=0, help="Tokens shared by neighbours."
+        overlap: str = typer.Option(
+            str(DEFAULT_OVERLAP), "--overlap", help="Tokens shared by neighbours (>= 0)."
         ),
     ) -> None:
         options = from_context(ctx)
+        try:
+            limit_value = parse_int_option(limit, field="limit", minimum=1, maximum=MAX_LIMIT)
+            chunk_value = parse_int_option(chunk_size, field="chunk_size", minimum=1)
+            overlap_value = parse_int_option(overlap, field="overlap", minimum=0)
+        except FinanceCofferError as exc:
+            emit_failure(options, exc)
         report = _run(
             options,
             lambda service: service.embed(
                 symbol,
-                limit=limit,
+                limit=limit_value,
                 pending=pending,
                 model=model,
-                chunk_size=chunk_size,
-                overlap=overlap,
+                chunk_size=chunk_value,
+                overlap=overlap_value,
             ),
-            chunk_size=chunk_size,
-            overlap=overlap,
+            chunk_size=chunk_value,
+            overlap=overlap_value,
             batch_size=batch_size,
         )
         payload = report.payload()
@@ -265,17 +277,21 @@ def register(app: typer.Typer) -> None:
     def reindex(
         ctx: typer.Context,
         symbol: str | None = typer.Option(None, "--symbol", help="Limit to one symbol."),
-        limit: int = typer.Option(
-            200, "--limit", min=1, max=MAX_LIMIT, help="Maximum announcements to re-embed."
+        limit: str = typer.Option(
+            "200", "--limit", help=f"Maximum announcements to re-embed (1-{MAX_LIMIT})."
         ),
         model: str | None = typer.Option(
             None, "--model", help="Embedding model label (default: FC_EMBEDDING_MODEL)."
         ),
     ) -> None:
         options = from_context(ctx)
+        try:
+            limit_value = parse_int_option(limit, field="limit", minimum=1, maximum=MAX_LIMIT)
+        except FinanceCofferError as exc:
+            emit_failure(options, exc)
         payload = _run(
             options,
-            lambda service: service.reindex(symbol, limit=limit, model=model),
+            lambda service: service.reindex(symbol, limit=limit_value, model=model),
         )
         if payload["failed"]:
             emit_failure(

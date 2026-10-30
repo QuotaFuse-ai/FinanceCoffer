@@ -11,7 +11,7 @@ import sys
 
 import typer
 
-from financecoffer.cli.options import GlobalOptions, from_context
+from financecoffer.cli.options import GlobalOptions, from_context, parse_int_option
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
 from financecoffer.config.loader import load_cli_config
@@ -79,19 +79,22 @@ def register(app: typer.Typer) -> None:
             "--etl-status",
             help="Filter by etl_status: " + "|".join(ETL_STATUSES) + ".",
         ),
-        limit: int = typer.Option(
-            DEFAULT_LIMIT, "--limit", min=1, max=MAX_LIMIT, help="Maximum number of records."
+        limit: str = typer.Option(
+            str(DEFAULT_LIMIT),
+            "--limit",
+            help=f"Maximum number of records (1-{MAX_LIMIT}).",
         ),
     ) -> None:
         options = from_context(ctx)
         try:
+            limit_value = parse_int_option(limit, field="limit", minimum=1, maximum=MAX_LIMIT)
             data = _service(options).listing(
                 data_type=data_type,
                 symbol=symbol,
                 since=since,
                 until=until,
                 etl_status=etl_status,
-                limit=limit,
+                limit=limit_value,
             )
         except FinanceCofferError as exc:
             emit_failure(options, exc)

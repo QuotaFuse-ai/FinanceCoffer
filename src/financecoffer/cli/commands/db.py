@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typer
 
-from financecoffer.cli.options import from_context
+from financecoffer.cli.options import from_context, parse_int_option
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
 from financecoffer.core.errors import FinanceCofferError
@@ -70,15 +70,18 @@ def register(app: typer.Typer) -> None:
         month: str | None = typer.Option(
             None, "--month", help="First month as YYYY-MM (default: current month)."
         ),
-        ahead: int = typer.Option(3, "--ahead", min=0, help="How many extra months to add."),
+        ahead: str = typer.Option(
+            "3", "--ahead", help="How many extra months to add (>= 0)."
+        ),
     ) -> None:
         options = from_context(ctx)
         try:
+            ahead_value = parse_int_option(ahead, field="ahead", minimum=0)
             start = parse_month(month) if month else None
             rows = create_partitions(
                 resolve_cli_dsn(options.db_url),
                 start_month=start,
-                ahead=ahead,
+                ahead=ahead_value,
                 timeout=options.timeout,
             )
         except FinanceCofferError as exc:

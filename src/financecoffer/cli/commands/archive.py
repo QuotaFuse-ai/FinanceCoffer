@@ -10,7 +10,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from financecoffer.archive import ArchiveService
 from financecoffer.archive.layout import TABLES
-from financecoffer.cli.options import GlobalOptions, from_context
+from financecoffer.archive.service import MAX_SAMPLE
+from financecoffer.cli.options import GlobalOptions, from_context, parse_int_option
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
 from financecoffer.config.loader import load_cli_config
@@ -106,23 +107,21 @@ def register(app: typer.Typer) -> None:
     @archive.command("run", help="Archive cold and oversized rows; uploads before marking.")
     def run(
         ctx: typer.Context,
-        older_than_years: int | None = typer.Option(
+        older_than_years: str | None = typer.Option(
             None,
             "--older-than-years",
-            min=0,
-            help="Cold age in years (default: FC_COLD_AFTER_YEARS).",
+            help="Cold age in years, zero or greater (default: FC_COLD_AFTER_YEARS).",
         ),
-        min_bytes: int = typer.Option(
-            8192,
+        min_bytes: str = typer.Option(
+            "8192",
             "--min-bytes",
-            min=1,
-            help="Oversized body threshold in bytes, regardless of age.",
+            help="Oversized body threshold in bytes, at least 1 (default: 8192).",
         ),
         dry_run: bool = typer.Option(
             False, "--dry-run", help="Report candidate counts and bytes; write nothing."
         ),
-        limit: int | None = typer.Option(
-            None, "--limit", min=1, help="Process at most N candidate rows per run."
+        limit: str | None = typer.Option(
+            None, "--limit", help="Process at most N candidate rows per run (>= 1)."
         ),
         symbol: Annotated[list[str] | None, typer.Option("--symbol", help=SYMBOL_HELP)] = None,
         table: Annotated[list[str] | None, typer.Option("--table", help=TABLE_HELP)] = None,
@@ -131,13 +130,27 @@ def register(app: typer.Typer) -> None:
         ),
     ) -> None:
         options = from_context(ctx)
+        try:
+            years_value = (
+                None
+                if older_than_years is None
+                else parse_int_option(older_than_years, field="older_than_years", minimum=0)
+            )
+            min_bytes_value = parse_int_option(min_bytes, field="min_bytes", minimum=1)
+            limit_value = (
+                None
+                if limit is None
+                else parse_int_option(limit, field="limit", minimum=1)
+            )
+        except FinanceCofferError as exc:
+            emit_failure(options, exc)
         if not dry_run and not yes:
             _require_yes(
                 options,
                 lambda service: service.count_candidates(
-                    older_than_years=older_than_years,
-                    min_bytes=min_bytes,
-                    limit=limit,
+                    older_than_years=years_value,
+                    min_bytes=min_bytes_value,
+                    limit=limit_value,
                     symbols=symbol,
                     tables=table,
                 ),
@@ -148,10 +161,10 @@ def register(app: typer.Typer) -> None:
         payload = _run_archive(
             options,
             lambda service: service.run(
-                older_than_years=older_than_years,
-                min_bytes=min_bytes,
+                older_than_years=years_value,
+                min_bytes=min_bytes_value,
                 dry_run=dry_run,
-                limit=limit,
+                limit=limit_value,
                 symbols=symbol,
                 tables=table,
             ),
@@ -224,12 +237,20 @@ def register(app: typer.Typer) -> None:
     )
     def verify(
         ctx: typer.Context,
-        sample: int = typer.Option(
-            100, "--sample", min=1, help="Maximum number of archived objects to check."
+        sample: str = typer.Option(
+            "100",
+            "--sample",
+            help=f"Maximum number of archived objects to check (1-{MAX_SAMPLE}).",
         ),
     ) -> None:
         options = from_context(ctx)
-        payload = _run_archive(options, lambda service: service.verify(sample=sample))
+        try:
+            sample_value = parse_int_option(
+                sample, field="sample", minimum=1, maximum=MAX_SAMPLE
+            )
+        except FinanceCofferError as exc:
+            emit_failure(options, exc)
+        payload = _run_archive(options, lambda service: service.verify(sample=sample_value))
         if payload["failed"]:
             emit_failure(
                 options,
