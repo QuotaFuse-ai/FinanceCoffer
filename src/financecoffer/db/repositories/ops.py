@@ -22,6 +22,10 @@ from financecoffer.db.models.ops import (
 )
 from financecoffer.db.repositories.base import BaseRepository
 
+#: Keeps the free-text ``error`` column readable; the structured reason lives
+#: in ``details`` on the exception, not in the ledger row.
+_ERROR_MAX = 1000
+
 
 class EventLogRepository(BaseRepository[EtlEventLog]):
     model = EtlEventLog
@@ -111,6 +115,38 @@ class EventLogRepository(BaseRepository[EtlEventLog]):
 
     def fail(self, event_id: str, error: str) -> EtlEventLog | None:
         return self._transition(event_id, status="failed", error=error)
+
+    def record_failure(
+        self,
+        event_id: str,
+        *,
+        provider: str,
+        data_type: str,
+        biz_key: str,
+        error_class: str,
+        reason: str,
+        error: str,
+        symbol: str | None = None,
+    ) -> EtlEventLog | None:
+        """Insert a ``failed`` row for a payload that never passed validation.
+
+        Validation runs before ``claim``, so a rejected payload has no ledger
+        row to transition: this is the only insert that starts from ``failed``.
+        It is conflict-tolerant so redelivering the same bad payload cannot
+        raise over the caller's real error, and it never overwrites a row that
+        already owns the id.
+        """
+
+        return self.insert_ignore_conflict(
+            event_id=event_id,
+            provider=provider,
+            data_type=data_type,
+            symbol=symbol,
+            biz_key=biz_key,
+            status="failed",
+            attempts=1,
+            error=f"{error_class}: {reason}: {error}"[:_ERROR_MAX],
+        )
 
     def to_dlq(self, event_id: str, error: str) -> EtlEventLog | None:
         return self._transition(event_id, status="dlq", error=error)
