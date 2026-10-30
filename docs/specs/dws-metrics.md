@@ -2,7 +2,7 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 版本 | v1.1（双口径估值） |
+| 版本 | v1.1.1（双口径估值 + 事件字段单位增补） |
 | 日期 | 2026-10-27（口径原文）/ 2026-10-30（迁入 `docs/specs/`）/ 2026-10-30（增补 `reference` 口径） |
 | 状态 | 口径已定稿；§8 的 12 项**待人类确认** |
 | 依据 | `docs/specs/financecoffer.md` §4.3／§5、`docs/specs/db-schema.md`、`docs/specs/event-contract.md`、`docs/specs/cli.md`、DEC-0005、DEC-0008、DEC-0010、`src/financecoffer/db/migrations/0005_dws.sql`、`src/financecoffer/db/models/dws.py`、`src/financecoffer/query/service.py` |
@@ -288,6 +288,15 @@
 | 年度基准 | 一个财年一条记录，`year = EXTRACT(year FROM report_date)`；年报优先（Q-04/Q-05） |
 | 同比 | **v1 不落 YoY**。消费方可从 `years[].revenue` 自算；落 YoY 会引入"哪一年是基期/缺失年怎么处理"的第二套规则（Q-06） |
 | 5 年窗口 | `fiscal_years` 个自然年，截止 `as_of` 所在年，向前连续；窗口内无报告的年份显式置 `data_status="missing"` |
+
+#### 4.1.1 事件金额/比率字段的单位与缺失语义（QUOT-249 增补，逐字合入上游 `UNIT-AUDIT.md` §9）
+
+- `total_market_cap`：事件层为**基本货币单位**（A 股=元；US=美元；HK=港元）。厂商刻度差异在采集端归一（CN 的腾讯 45 号位为亿元，只在事件构造处 ×1e8 一次），DWS **不得再乘任何系数**。
+- `pb_mrq`：最新报告季市净率（倍数），与 `pb` 同值。**仅当 `> 0` 时出现**；0 / 负 / 缺失 ⇒ 字段缺席、DWD 落 `NULL`，`reference` 口径写 `no_vendor_pb`，不自行补算。
+- `amount_net_profit_deducted`：扣非归母净利润，年初至今累计，基本货币单位。缺失落 `NULL`；**不得**用 `amount_net_profit`（归母）顶替——两者在存在非经常性损益时不等，顶替即一次静默的估值重述。
+- `biz_key` 代次：`quote` / `financial` 的键尾带字段代次标记（当前 `|g2`）。`event_id` 只哈希 `provider|data_type|symbol|biz_key`，DWD append-only 且按 `event_id` 去重，因此字段单位/口径变化必须体现为键变化，否则修正会被当成重放丢弃；标记是常量，不随运行时间变化。
+- 币种：`dwd.stock_quote_snapshot` 没有币种列（`db/models/dwd.py:200-234`，`currency` 只存在于 `NorthboundFlow`），A 股之外的金额事件缺少自证币种的落库位置；本期 `reference` 只承诺 A 股，US/HK 走 `null` + 原因码，不是缺陷。
+- 精度：事件金额一律**字符串**、4 位小数，全链路 `Decimal`；`float` 乘 1e8 会把大市值的尾数变成噪声，`NUMERIC(24,4)` 侧会当成精度损失拒绝入库。
 
 ### 4.2 `revenue` / `net_profit`
 
@@ -909,3 +918,4 @@ WHERE w.symbol = :'symbol';
 | --- | --- | --- |
 | 2026-10-27 | v1.0 | 首版：字段映射、口径定义、NULL 规则、幂等与重算、对账 SQL 草案、12 项待确认 |
 | 2026-10-30 | v1.0（迁移版） | 从原任务文档迁入 `docs/specs/dws-metrics.md`：剥离内部任务编号/作者/机器路径，增补迁移说明与交叉引用；口径、SQL 与 §8 未改动；M-01/M-02/M-04 标注已收敛 |
+| 2026-10-30 | v1.1.1 | §4.1.1 合入上游 `UNIT-AUDIT.md` §9 草案：`total_market_cap` 为基本货币单位且消费端不再换算、`pb_mrq` 仅 `>0`、`amount_net_profit_deducted` 不得用归母顶替、`biz_key` 代次标记 `\|g2`、无币种列的已知限制与精度要求 |
