@@ -1,6 +1,6 @@
 # FinanceCoffer 事件契约（Event Contract v1）
 
-版本：v0.8（草案，待 TickHub 侧确认）
+版本：v0.9（草案，待 TickHub 侧确认）
 适用范围：TickHub-CN / TickHub-US → FinanceCoffer 的唯一数据入口。
 原则：事件即证据。FinanceCoffer 只做校验、落库、索引，不补算、不改写上游判定。
 
@@ -179,6 +179,27 @@
 - `pe_ttm` / `total_market_cap` 用于 `snapshot` 估值口径。
 - `pb_mrq`（可选）是厂商原样的 MRQ 市净率，只做**透传**，供 `reference` 估值口径使用；FinanceCoffer 不用净资产自行计算，缺失即 `NULL`。
 
+#### 3.4.1 金额单位、新字段与缺失语义（QUOT-249 增补，逐字合入上游 `UNIT-AUDIT.md` §9）
+
+```
+quote.structured_fields
+  total_market_cap  string 基本货币单位（A 股=元；US=美元；HK=港元）。厂商刻度差异在采集端
+                           归一，消费端不得再乘任何系数。
+  pb                string 厂商市净率原值（倍数）。契约不消费，仅为存档兼容保留。
+  pb_mrq            string 最新报告季市净率（倍数），与 pb 同值。仅当 > 0 时出现；
+                           0 / 负 / 缺失 ⇒ 字段缺席并进 quality_metrics.missing_fields。
+financial.structured_fields
+  amount_net_profit_deducted  string 扣非归母净利润，年初至今累计，基本货币单位。
+                           缺失 ⇒ 字段缺席；消费端不得用 amount_net_profit（归母）顶替，
+                           两者在存在非经常性损益时不等，顶替即一次静默的估值重述。
+biz_key
+  quote / financial 的键尾带字段代次标记（当前 `|g2`）。event_id 只哈希
+  provider|data_type|symbol|biz_key，DWD append-only 且按 event_id 去重，因此字段单位/口径
+  变化必须体现为键变化，否则修正会被当成重放丢弃。标记是常量，不随运行时间变化。
+```
+
+本节与 §3.2（`financial`）重复处，以本节字段语义为准；`financial.structured_fields` 的其余规则（字符串传输、`NUMERIC(20,4)`、`quality_status` 必填、`statement` 业务键）仍见 §3.2。
+
 ### 3.5 `risk`（文档未定义，为 `get_risk_history` 补齐，见 G-04）
 
 ```json
@@ -337,3 +358,4 @@
 | 2026-10-29 | v0.6 | 版本行与 §7 G-02 的外部协作方表述统一为「TickHub 侧」（DEC-0025，公开仓库规则：`docs/` 不出现团队称谓） |
 | 2026-10-30 | v0.7 | §7 G-13 关闭：上游已补齐 `kline` 与 `financial` 采集（`TickHub-CN: src/tickhub_cn/crawler/store.py:395`、`:448`；`TickHub-US: us_collector/publisher.py:49-51` 声明 8 类 `data_type`），「CN 无 kline / 财报写入方」的假设不再成立 |
 | 2026-10-30 | v0.8 | `financial` 补可选 `amount_net_profit_deducted`（累计扣非净利润），`quote` 补可选 `pb_mrq`（厂商 PB 透传），支撑双口径估值；均为可选字段，不升 `schema_version` |
+| 2026-10-30 | v0.9 | §3.4.1 合入上游 `UNIT-AUDIT.md` §9 草案：写清 `total_market_cap` 为基本货币单位（采集端归一、消费端不再换算）、`pb_mrq` 仅 `>0` 才出现、`amount_net_profit_deducted` 缺失不得用归母顶替、`biz_key` 尾带字段代次标记 `|g2` |
