@@ -58,6 +58,30 @@ class Chunk:
     end_char: int
 
 
+@dataclass(frozen=True)
+class TokenizerSelection:
+    """The chunker a process ended up with, and why.
+
+    ``degraded`` is the flag callers must disclose: token counts are then
+    approximate, so a 512-token window is not exactly what bge-m3 encodes.
+    """
+
+    tokenizer: Tokenizer
+    name: str
+    degraded: bool
+    reason: str | None
+
+
+def tokenizer_metadata(selection: TokenizerSelection) -> dict[str, object]:
+    """The ``tokenizer_name`` / ``degraded`` / ``degraded_reason`` disclosure."""
+
+    return {
+        "tokenizer_name": selection.name,
+        "degraded": selection.degraded,
+        "degraded_reason": selection.reason,
+    }
+
+
 class HuggingFaceTokenizer:
     """Wrapper around ``tokenizers.Tokenizer`` with normalized offsets."""
 
@@ -131,16 +155,30 @@ def resolve_tokenizer_path() -> Path | None:
 
 
 @lru_cache(maxsize=1)
-def default_tokenizer() -> Tokenizer:
-    """Load the model tokenizer once per process, or the fallback."""
+def default_tokenizer_selection() -> TokenizerSelection:
+    """Load the model tokenizer once per process, disclosing any fallback."""
 
     path = resolve_tokenizer_path()
-    if path is not None:
-        try:
-            return HuggingFaceTokenizer(path)
-        except Exception as exc:  # noqa: BLE001 - any load failure falls back
-            _log.warning("cannot load the bge-m3 tokenizer; using approximate tokens: %s", exc)
-    return ApproximateTokenizer()
+    if path is None:
+        reason = (
+            "tokenizer.json not found in FC_TOKENIZER_PATH, FC_EMBEDDING_MODEL_DIR "
+            "or var/models/bge-m3"
+        )
+        _log.warning("bge-m3 tokenizer not found; using approximate tokens: %s", reason)
+        return TokenizerSelection(ApproximateTokenizer(), "approximate", True, reason)
+    try:
+        return TokenizerSelection(HuggingFaceTokenizer(path), "bge-m3", False, None)
+    except Exception as exc:  # noqa: BLE001 - any load failure falls back
+        _log.warning("cannot load the bge-m3 tokenizer; using approximate tokens: %s", exc)
+        return TokenizerSelection(
+            ApproximateTokenizer(), "approximate", True, f"cannot load {path}: {exc}"
+        )
+
+
+def default_tokenizer() -> Tokenizer:
+    """The chunker for this process: the model tokenizer, or the fallback."""
+
+    return default_tokenizer_selection().tokenizer
 
 
 def validate_chunk_settings(chunk_size: int, overlap: int) -> None:
@@ -218,8 +256,11 @@ __all__ = [
     "Chunk",
     "HuggingFaceTokenizer",
     "Tokenizer",
+    "TokenizerSelection",
     "chunk_text",
     "default_tokenizer",
+    "default_tokenizer_selection",
     "resolve_tokenizer_path",
+    "tokenizer_metadata",
     "validate_chunk_settings",
 ]

@@ -35,7 +35,7 @@ from financecoffer.vector.chunking import (
     HuggingFaceTokenizer,
     Tokenizer,
     chunk_text,
-    default_tokenizer,
+    default_tokenizer_selection,
     validate_chunk_settings,
 )
 from financecoffer.vector.embeddings import (
@@ -132,6 +132,9 @@ class EmbedReport:
     deleted: int = 0
     missing: int = 0
     results: tuple[AnnouncementResult, ...] = field(default_factory=tuple)
+    tokenizer_name: str = ""
+    degraded: bool = False
+    degraded_reason: str | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -145,6 +148,9 @@ class EmbedReport:
             "updated": self.updated,
             "deleted": self.deleted,
             "missing_chunks": self.missing,
+            "tokenizer_name": self.tokenizer_name,
+            "degraded": self.degraded,
+            "degraded_reason": self.degraded_reason,
             "results": [result.payload() for result in self.results],
         }
 
@@ -192,7 +198,19 @@ class VectorService:
         self.batch_size = batch_size
         self.chunk_size = chunk_size
         self.overlap = overlap
-        self.tokenizer = tokenizer or default_tokenizer()
+        if tokenizer is None:
+            selection = default_tokenizer_selection()
+            self.tokenizer = selection.tokenizer
+            self._tokenizer_degraded = selection.degraded
+            self._tokenizer_degraded_reason = selection.reason
+        else:
+            self.tokenizer = tokenizer
+            self._tokenizer_degraded = isinstance(tokenizer, ApproximateTokenizer)
+            self._tokenizer_degraded_reason = (
+                "the approximate tokenizer is used instead of the bge-m3 tokenizer"
+                if self._tokenizer_degraded
+                else None
+            )
         self._embedding_client = embedding_client
         self._writer_factory = writer_factory
         self._query_service = query_service
@@ -246,6 +264,21 @@ class VectorService:
             return "approximate"
         return type(self.tokenizer).__name__
 
+    @property
+    def tokenizer_degraded(self) -> bool:
+        """True when token windows are approximate rather than bge-m3 exact."""
+
+        return self._tokenizer_degraded
+
+    def tokenizer_metadata(self) -> dict[str, Any]:
+        """Tokenizer identity and fallback disclosure, for result metadata."""
+
+        return {
+            "tokenizer_name": self.tokenizer_name,
+            "degraded": self._tokenizer_degraded,
+            "degraded_reason": self._tokenizer_degraded_reason,
+        }
+
     # -- chunking -----------------------------------------------------------
 
     def chunk_preview(
@@ -288,7 +321,7 @@ class VectorService:
             "symbol": canonical,
             "chunk_size": size,
             "overlap": window,
-            "tokenizer": self.tokenizer_name,
+            **self.tokenizer_metadata(),
             "announcements": len(sources),
             "chunks": total_chunks,
             "tokens": total_tokens,
@@ -358,6 +391,9 @@ class VectorService:
             deleted=sum(result.deleted for result in results),
             missing=sum(result.failed for result in results),
             results=tuple(results),
+            tokenizer_name=self.tokenizer_name,
+            degraded=self._tokenizer_degraded,
+            degraded_reason=self._tokenizer_degraded_reason,
         )
 
     def _process_source(
@@ -508,7 +544,7 @@ class VectorService:
             "pending_announcements": int(pending or 0),
             "chunk_size": self.chunk_size,
             "overlap": self.overlap,
-            "tokenizer": self.tokenizer_name,
+            **self.tokenizer_metadata(),
             "embedding_dim": self.config.embedding_dim,
             "embedding_model": self.config.embedding_model,
             "index": self.index_status(),
