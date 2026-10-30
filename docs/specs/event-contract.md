@@ -182,7 +182,7 @@
                   消费端不得再乘 100，也不得按行业惯例理解为手。
 ```
 
-`volume` 是整数字符串（`NUMERIC(20,4)` 侧存原值）；FinanceCoffer 只存不算，DWS 没有任何公式消费 `volume`。
+`volume` 是整数字符串，落 `dwd.stock_kline_daily.volume`（`NUMERIC(24,4)`，`db/models/dwd.py:148`）原值；FinanceCoffer 只存不算，DWS 没有任何公式消费 `volume`。
 
 #### 3.3.1 存量单位分界（切流前为「手」）
 
@@ -340,7 +340,7 @@ biz_key
   重新发布的事件不会覆盖旧行。
 ```
 
-- `deal_amount` **没有 FinanceCoffer 消费方**：全仓 `git grep deal_amount` 零命中，`NorthboundFields` 是 `extra="allow"`，`dwd.northbound_flow` 无此列——它只进 ODS 存档，后续读到该字段时不要假设它有落库位置。
+- `deal_amount` **没有 FinanceCoffer 消费方**：除本契约文档外全仓无该键（改名核对时 `git grep deal_amount` 零命中），`NorthboundFields` 是 `extra="allow"`（`src/financecoffer/events/models.py:263`），`dwd.northbound_flow` 无此列（只有 `net_buy_amount` / `buy_amount` / `sell_amount` / `currency`，`db/models/dwd.py:281-284`）——它只进 ODS 存档，后续读到该字段时不要假设它有落库位置。
 - `net_buy_amount` 落 `dwd.northbound_flow.net_buy_amount`；单位由万元改为元**不换 `biz_key`**（该表 `insert_once`，换键只会在 ODS 留下同日两条不同量级的事件，DWD 仍只认第一条，等于制造双份真相而不是修正，见 §9.2）。新日期自然用新单位；存量的盘点与定向修数属生产写操作，本期不做。
 
 ### 3.8 `heartbeat`（上游存活信号）
