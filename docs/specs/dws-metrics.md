@@ -2,8 +2,8 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 版本 | v1.1.1（双口径估值 + 事件字段单位增补） |
-| 日期 | 2026-10-27（口径原文）/ 2026-10-30（迁入 `docs/specs/`）/ 2026-10-30（增补 `reference` 口径） |
+| 版本 | v1.1.2（双口径估值 + 事件字段单位增补 + DWS 市场闸） |
+| 日期 | 2026-10-27（口径原文）/ 2026-10-30（迁入 `docs/specs/`）/ 2026-10-30（增补 `reference` 口径）/ 2026-10-31（§4.1 金额单位定稿与市场闸） |
 | 状态 | 口径已定稿；§8 的 12 项**待人类确认** |
 | 依据 | `docs/specs/financecoffer.md` §4.3／§5、`docs/specs/db-schema.md`、`docs/specs/event-contract.md`、`docs/specs/cli.md`、DEC-0005、DEC-0008、DEC-0010、`src/financecoffer/db/migrations/0005_dws.sql`、`src/financecoffer/db/models/dws.py`、`src/financecoffer/query/service.py` |
 | 产出物性质 | **文档 + SQL 草案**。不含生产代码，不改 `src/`，不建库、不跑数据。 |
@@ -281,7 +281,7 @@
 | --- | --- |
 | 时间基准 | `as_of` = 构建日（或 `--as-of`）UTC 00:00:00；所有窗口边界以此为锚，`DATE` 类型字段（`report_date` / `occur_date` / `ann_date`）无时区，按自然日直接比较 |
 | 版本规则 | 同一业务键 `ORDER BY version DESC LIMIT 1`；`version` 由 FinanceCoffer 生成，上游不传 |
-| 金额单位 | **元（CNY）**，与 DWD `amount_*` 原样一致，**不做万元/亿元换算、不做汇率换算**；展示层需要时自行换算（Q-09） |
+| 金额单位 | **元（CNY）**，与 DWD `amount_*` 原样一致，不做万元/亿元换算、不做汇率换算。该口径只适用于 A 股（`market=CN`）；US/HK 行缺少币种列，`reference`/`snapshot` 一律 null + 原因码（`currency_unknown` / `unsupported_market`）。展示层需要万元/亿元时自行换算（Q-09） |
 | 金额精度 | 4 位小数（对齐 `NUMERIC(20,4)`）；不四舍五入到整数，不科学计数 |
 | 比率精度 | 4 位小数；ROE 用小数（非百分数） |
 | 浮点 | 全链路禁用 float：SQL 侧 `NUMERIC`，Python 侧 `Decimal`，JSONB 侧金额用字符串 |
@@ -296,6 +296,8 @@
 - `amount_net_profit_deducted`：扣非归母净利润，年初至今累计，基本货币单位。缺失落 `NULL`；**不得**用 `amount_net_profit`（归母）顶替——两者在存在非经常性损益时不等，顶替即一次静默的估值重述。
 - `biz_key` 代次：`quote` / `financial` 的键尾带字段代次标记（当前 `|g2`）。`event_id` 只哈希 `provider|data_type|symbol|biz_key`，DWD append-only 且按 `event_id` 去重，因此字段单位/口径变化必须体现为键变化，否则修正会被当成重放丢弃；标记是常量，不随运行时间变化。
 - 币种：`dwd.stock_quote_snapshot` 没有币种列（`db/models/dwd.py:200-234`，`currency` 只存在于 `NorthboundFlow`），A 股之外的金额事件缺少自证币种的落库位置；本期 `reference` 只承诺 A 股，US/HK 走 `null` + 原因码，不是缺陷。
+- 市场闸（QUOT-267，本口径的代码执行点）：DWS 构建的唯一汇合点 `dws/builder.py::_build_one` 只接受 6 位数字 symbol（判据是形状，不是交易所前缀白名单）。非 A 股 symbol **不进公式**：`build --all` / `rebuild` 枚举到它、`--symbol` 显式指定它，都进 `BuildReport.skipped`，原因码 `non_a_share_symbol`（跳过不是失败，`rebuild` 不得因含 US 行而退出非零）。因此上文的 `currency_unknown` / `unsupported_market` 在闸之后不会真的产出 US/HK 宽表行；它们保留为**切流前遗留行**与未来跨市场需求的口径承诺。
+- 遗留行：闸不删除此前落下的非 A 股宽表行。`dws show AAPL` 仍返回该行原文，但输出 `valuation.available=false` + 原因码 `non_a_share_symbol`，不静默展示估值（`cli.md` §3.9）。
 - 精度：事件金额一律**字符串**、4 位小数，全链路 `Decimal`；`float` 乘 1e8 会把大市值的尾数变成噪声，`NUMERIC(24,4)` 侧会当成精度损失拒绝入库。
 
 ### 4.2 `revenue` / `net_profit`
@@ -919,3 +921,4 @@ WHERE w.symbol = :'symbol';
 | 2026-10-27 | v1.0 | 首版：字段映射、口径定义、NULL 规则、幂等与重算、对账 SQL 草案、12 项待确认 |
 | 2026-10-30 | v1.0（迁移版） | 从原任务文档迁入 `docs/specs/dws-metrics.md`：剥离内部任务编号/作者/机器路径，增补迁移说明与交叉引用；口径、SQL 与 §8 未改动；M-01/M-02/M-04 标注已收敛 |
 | 2026-10-30 | v1.1.1 | §4.1.1 合入上游 `UNIT-AUDIT.md` §9 草案：`total_market_cap` 为基本货币单位且消费端不再换算、`pb_mrq` 仅 `>0`、`amount_net_profit_deducted` 不得用归母顶替、`biz_key` 代次标记 `\|g2`、无币种列的已知限制与精度要求 |
+| 2026-10-31 | v1.1.2 | QUOT-258 定稿（上游 `UNIT-AUDIT.md` §9.4 / §9.5）：§4.1「金额单位」行写明**口径只适用 A 股**、US/HK 缺币种列时 `reference`/`snapshot` 一律 `null` + 原因码；§4.1.1 补 DWS 市场闸（`_build_one` 只接受 6 位数字 symbol，非 A 股进 `BuildReport.skipped` + `non_a_share_symbol`）与遗留宽表行的 `dws show` 表态规则。不改表、不改公式、不加 `currency`/`market` 列 |

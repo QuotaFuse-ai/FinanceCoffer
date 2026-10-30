@@ -1,6 +1,6 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.16（设计稿）
+版本：v0.17（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
 v0.3 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
@@ -17,6 +17,7 @@ v0.13 数值区间选项第二批（8 项）改为命令内判界并走 `E_INVAL
 v0.14 命令树总表修正：§2 的 `vector index` 展开为实装的 `vector index create|status|drop`（与 §3.10 对齐）；删除不存在的 `fcoffer dwd announcement list|show`（`dwd` 只有 `show|versions|backfill|verify`，公告元数据当前无 CLI 查询入口）。
 v0.15 `query structured` 与 MCP 工具新增可选 `valuation_basis`（`snapshot|reference`），缺省取宽表 `default_basis`；口径定义见 `docs/specs/dws-metrics.md` §4.4.5–4.4.6。
 v0.16 构建期默认口径可配置：新增 `FC_METRICS_PROFILE`（`snapshot|reference`，默认 `snapshot`，非法值加载即报 `E_CONFIG`），`dws build` / `dws rebuild` 新增 `--valuation-basis`（优先级 命令行 > `FC_METRICS_PROFILE` > `snapshot`），构建时写入 `metrics_json.valuation.default_basis`，顶层 `pe` / `pb` 等扁平键改为该口径的镜像。`query structured` 的 `--valuation-basis` 仍是**单次读取覆盖**，两者语义不同（§3.9、§3.12）。同时补回显回归口径：REST 与 MCP 一致、未构建口径 `basis_not_built` 不回落、无 `default_basis` 的历史行折叠为 `snapshot`。前端落地在 LadderStock 个股深挖页 / 研究报告页（该端当前尚无 FinanceCoffer 适配器，也没有 PE/PB/ROE 展示位）。
+v0.17 §3.9 补 DWS 市场闸：`dws build` / `dws show` 的符号参数不再是「A 股代码或美股 ticker」，只构建 6 位数字 A 股代码；非 A 股符号进 `skipped` + 原因码 `non_a_share_symbol`（不是失败），`dws show` 对闸前的遗留非 A 股行输出 `valuation.available=false`。口径见 `docs/specs/dws-metrics.md` §4.1 / §4.1.1。
 
 ## 1. 全局参数
 
@@ -233,9 +234,11 @@ fcoffer dws rebuild [--as-of YYYY-MM-DD] [--years N] [--valuation-basis snapshot
 - 单个 symbol 失败或跳过不影响其他 symbol；存在失败时输出完整 `built` / `skipped` / `failed` 明细，
   并以 `E_PARTIAL_FAILURE`（退出码 8）返回。
 - `rebuild` 等价于 `build --all`。
+- `--symbol` / `--all` 只构建 **6 位数字的 A 股代码**（DWS 市场闸）：三张 DWD 表都没有 `currency` / `market` 列，非 A 股金额没有币种可依，不得进 `total_market_cap / 净利润` 这类口径。判据是形状 `^[0-9]{6}$`，不是交易所前缀白名单。
+  闸装在 `_build_one`（所有构建的唯一汇合点），所以显式 `--symbol AAPL` 与 `--all` 枚举到的 US ticker 一视同仁：进 `skipped`，原因码 `non_a_share_symbol`，**不静默丢弃、也不是失败**（`rebuild` 含 US 行时仍退出 0）。
 - 同一输入与同一 `--as-of` 重复执行，`metrics_json` / `risk_summary` / `latest_announcements` 的 JSONB 内容逐字节一致
   （仅 `built_at` 变化）。已存 `as_of` 更新时，更早的 `--as-of` 会被跳过（`reason: stale_as_of`），不覆盖较新快照。
-- `show` 读取已构建的宽表行；不存在返回 `E_NOT_FOUND`。
+- `show` 读取已构建的宽表行；不存在返回 `E_NOT_FOUND`。闸落下之前的非 A 股遗留行**不删**，但输出带 `valuation: {"available": false, "reason": "non_a_share_symbol"}`，不静默展示估值；A 股行不带该键。
 
 宽表字段（以 DDL `dws.stock_agent_analysis_wide` 为准）：`symbol`、`as_of`、`metrics_json`、`risk_summary`、
 `latest_announcements`、`fiscal_years`、`source_version`、`built_at`、`compliance_tier`、`commercial_use`。

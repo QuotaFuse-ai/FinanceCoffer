@@ -89,6 +89,13 @@ PRICE_GAP_DAYS = 366
 _QUANT = Decimal("0.0001")
 _MONEY_PATTERN = re.compile(r"^-?\d{1,16}(\.\d{1,4})?$")
 
+#: The DWS money 口径 (spec §4.1) is only defined for A-shares: none of the three
+#: DWD tables carries a ``currency`` or ``market`` column, so a US/HK amount that
+#: reaches a formula is silently wrong by an unknown factor. Six digits is the
+#: shape ``normalize_symbol`` accepts for an A-share code.
+_A_SHARE_SYMBOL = re.compile(r"^[0-9]{6}$")
+NON_A_SHARE_REASON = "non_a_share_symbol"
+
 BuildStatus = Literal["built", "skipped", "failed"]
 
 
@@ -162,6 +169,12 @@ class _YearSelection:
     row: StockFinancialSnapshot | None
     basis: str | None
     ambiguous: bool
+
+
+def is_a_share_symbol(symbol: str) -> bool:
+    """Return whether ``symbol`` may be read under the A-share money 口径."""
+
+    return _A_SHARE_SYMBOL.fullmatch(symbol) is not None
 
 
 def parse_as_of(value: str | None, *, today: date | None = None) -> date:
@@ -676,6 +689,11 @@ class DwsService:
                     "tier": row.compliance_tier,
                     "commercial_use": row.commercial_use,
                 }
+            if not is_a_share_symbol(canonical):
+                # The stored row predates the build gate and is not deleted, but
+                # its numbers were computed under the A-share 元 口径. Say so
+                # instead of displaying a valuation that cannot be trusted.
+                payload["valuation"] = {"available": False, "reason": NON_A_SHARE_REASON}
             return payload
 
     def _targets(self, symbols: Sequence[str], *, build_all: bool) -> list[str]:
@@ -702,6 +720,8 @@ class DwsService:
     def _build_one(
         self, symbol: str, day: date, fiscal_years: int, default_basis: str
     ) -> SymbolResult:
+        if not is_a_share_symbol(symbol):
+            return SymbolResult(symbol=symbol, status="skipped", reason=NON_A_SHARE_REASON)
         try:
             with self.database.session_scope() as session:
                 _lock(session, symbol)

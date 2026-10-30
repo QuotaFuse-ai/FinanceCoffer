@@ -1,6 +1,6 @@
 # FinanceCoffer 事件契约（Event Contract v1）
 
-版本：v0.9（草案，待 TickHub 侧确认）
+版本：v0.10（金额单位、成交量单位与字段代次已按 QUOT-258 定稿，2026-10-31；其余待确认项见 §7）
 适用范围：TickHub-CN / TickHub-US → FinanceCoffer 的唯一数据入口。
 原则：事件即证据。FinanceCoffer 只做校验、落库、索引，不补算、不改写上游判定。
 
@@ -25,7 +25,7 @@
 | --- | --- | --- | --- |
 | `schema_version` | string | 是 | 首版 `"1.0"`；不兼容变更升主版本 |
 | `event_id` | string | 是 | 确定性生成：`evt_` + `sha256(provider\|data_type\|symbol\|biz_key)` 前 32 位十六进制；同一业务事实重发必须得到同一 ID |
-| `biz_key` | string | 是 | 业务主键，参与 `event_id` 计算：公告=公告 ID，财报=`report_date\|statement`，K 线=`trade_date\|period\|adjust`，行情=`trade_date\|ts`，研报=研报 ID，北向=`trade_date\|channel`，风险=`occur_date\|risk_type\|ref`，心跳=`run_id` |
+| `biz_key` | string | 是 | 业务主键，参与 `event_id` 计算：公告=公告 ID，财报=`report_date\|statement`，K 线=`trade_date\|period\|adjust\|g2`，行情=`trade_date\|ts\|g2`，研报=研报 ID，北向=`trade_date\|channel`（**不加代次**，见 §2.3），风险=`occur_date\|risk_type\|ref`，心跳=`run_id`；尾缀代次见 §2.3 |
 | `event_time` | string | 是 | RFC3339 UTC，**业务发生时间**（公告发布时间 / 成交时间 / 报告期），不是发送时间 |
 | `data_type` | string | 是 | `financial` / `announcement` / `kline` / `quote` / `risk` / `research` / `northbound` / `heartbeat` |
 | `symbol` | string | 是 | A 股 6 位代码；美股 `AAPL` / `BRK.B`；`heartbeat` 为 `null` |
@@ -55,6 +55,24 @@
 4. **不阻塞采集**：发布是旁路，异步执行；单条发布超时（建议 2s）即转入 outbox。
 5. **有界**：`XADD` 带 `MAXLEN ~ 100000`；outbox 积压与投递失败要有计数，能被监控发现。
 6. **单实例**：外部调度器与常驻服务不得同时在跑，否则重复调用上游接口会触发限流。
+
+### 2.3 键上的字段代次（QUOT-258 定稿）
+
+> §2.3 / §3.3 / §3.4.2 / §3.7 / §7 G-02 中标注「QUOT-258 定稿」的代码块逐字取自上游
+> `TickHub-CN:UNIT-AUDIT.md` §9.5（分支 `docs/quot-258-unit-decisions`，commit `83cc70e`）；
+> 块内的 `§9.2` / `§9.4` 等编号指该文档的章节。
+
+```text
+  K 线   = trade_date|period|adjust|g2
+  quote  = trade_date|ts|g2
+  北向   = trade_date|channel              （该表 insert_once，换键无收益，见 §9.2）
+  尾缀 g2 = 字段代次：市值为元 + pb_mrq + 扣非归母（quote/financial），或成交量由手改为股
+            （kline）。代次是常量，不随运行时间变化；event_id 只哈希
+            provider|data_type|symbol|biz_key，DWD 按 event_id 去重，所以单位/口径变化必须
+            体现为键变化，否则修正会被当成重放丢弃。
+```
+
+代次只写在 `biz_key` 上，不是新字段：信封 §2 的 `biz_key` 仍是单值字符串。`g2` 之前的键（`trade_date|period|adjust`、`trade_date|ts`）属于上一代字段单位，见 §3.3.1。
 
 ## 3. 按类型的内容结构
 
@@ -157,6 +175,26 @@
 }
 ```
 
+单位规则（QUOT-258 定稿）：
+
+```text
+  volume  string  成交量，单位**股**。A 股由采集端按 1 手 = 100 股换算，US 本来就是股；
+                  消费端不得再乘 100，也不得按行业惯例理解为手。
+```
+
+`volume` 是整数字符串（`NUMERIC(20,4)` 侧存原值）；FinanceCoffer 只存不算，DWS 没有任何公式消费 `volume`。
+
+#### 3.3.1 存量单位分界（切流前为「手」）
+
+`volume` 的单位切换**不能靠改旧行完成**，因此存量里存在两种单位：
+
+- `dwd.stock_kline` 受 append-only 触发器保护，只放行 `is_cold` / `minio_url` / `ingested_at` 的更新（`src/financecoffer/db/migrations/0004_dwd.sql:7`）；
+- 上游爬虫只回看 250 个交易日、历史日不重播 ⇒ 切流前的存量 `volume` 改不掉；
+- `ingested_at` 会被归档流程翻动，不能作为分界；`version` 也不是分界——切流后同一天重播两次得到 v2/v3，两代都是「股」；
+- **唯一可靠的分界**是 `event_id` 回连 `ods.stock_raw_data.biz_key`（`src/financecoffer/db/models/ods.py:57`）是否含 `|g2`。
+
+硬规则：**切流前的 `dwd.stock_kline.volume` 单位是手；在存量重播 / 迁移完成之前，禁止任何跨切流边的平均、求和、同比**（跨边聚合必然混 1 与 100 两种刻度）。存量重播挂在 QUOT-268（需人类批准生产窗口）；完成前所有 K 线成交量只做单日展示，不进指标。
+
 ### 3.4 `quote`（文档未定义，为 PE 预计算补齐，见 G-05）
 
 ```json
@@ -199,6 +237,18 @@ biz_key
 ```
 
 本节与 §3.2（`financial`）重复处，以本节字段语义为准；`financial.structured_fields` 的其余规则（字符串传输、`NUMERIC(20,4)`、`quality_status` 必填、`statement` 业务键）仍见 §3.2。
+
+#### 3.4.2 币种列缺失的限制（QUOT-258 定稿）
+
+```text
+  total_market_cap / close 为**基本货币单位**（A 股=元，US=美元，HK=港元），换算在采集端完成。
+  structured_fields 里的 currency/market 仅供追溯：dwd.stock_quote_snapshot 没有这两列，
+  非 A 股行的金额没有币种可依，不得参与任何估值或跨市场比较。
+```
+
+落库侧的对应约束（`dws-metrics.md` §4.1）：三张 DWD 表（`stock_quote_snapshot` / `stock_kline_daily` / `stock_financial_snapshot`）的金额列**只按 A 股口径理解为元**；本期不加 `currency` / `market` 列，扩表触发条件见本节末尾。这条限制不靠文档自觉执行——DWS 构建侧有市场闸，非 6 位数字的 symbol 一律跳过并记原因码 `non_a_share_symbol`（`fcoffer dws build` 报告、`cli.md` §3.9）。
+
+扩表触发条件（满足任意一条就必须加 `currency CHAR(3) NOT NULL DEFAULT 'CNY'` 与 `market CHAR(2)`，不受本期约束）：任一 US/HK 标的进入 `reference`/`snapshot` 的符号域；任一消费方需要跨市场比较市值、成交额、PE/PB；对外接口或看板展示 US/HK 金额且不附带市场上下文；FinanceCoffer 把 `amount` / `volume` 纳入任何公式。
 
 ### 3.5 `risk`（文档未定义，为 `get_risk_history` 补齐，见 G-04）
 
@@ -267,6 +317,7 @@ biz_key
       "net_buy_amount": "123456789.0000",
       "buy_amount": "987654321.0000",
       "sell_amount": "864197532.0000",
+      "deal_amount": "1851851853.0000",
       "currency": "CNY"
     },
     "quality_metrics": {"confidence": "high", "quality_status": "normal"}
@@ -275,6 +326,22 @@ biz_key
 ```
 
 规则：`symbol` 为 `null`（市场级指标）；`biz_key` = `trade_date|channel`。ODS 原样保留 `symbol=null`（DEC-0017），DWD `dwd.northbound_flow` 以 `(trade_date, channel)` 为键。
+
+字段口径（QUOT-258 定稿）：
+
+```text
+  net_buy_amount string  当日净买入额，单位**元（CNY）**。上游 2024-08-19 起停止披露时字段
+                         缺席，不补 0、不外推。
+  deal_amount    string  当日成交额，单位**元（CNY）**。旧名 deal_amount_wan（万元）作废，
+                         不再发送。
+  currency       string  固定 "CNY"。
+  biz_key        trade_date|channel
+  消费端注意：dwd.northbound_flow 以 (trade_date, channel) 插入一次、不可变；同一天换单位后
+  重新发布的事件不会覆盖旧行。
+```
+
+- `deal_amount` **没有 FinanceCoffer 消费方**：全仓 `git grep deal_amount` 零命中，`NorthboundFields` 是 `extra="allow"`，`dwd.northbound_flow` 无此列——它只进 ODS 存档，后续读到该字段时不要假设它有落库位置。
+- `net_buy_amount` 落 `dwd.northbound_flow.net_buy_amount`；单位由万元改为元**不换 `biz_key`**（该表 `insert_once`，换键只会在 ODS 留下同日两条不同量级的事件，DWD 仍只认第一条，等于制造双份真相而不是修正，见 §9.2）。新日期自然用新单位；存量的盘点与定向修数属生产写操作，本期不做。
 
 ### 3.8 `heartbeat`（上游存活信号）
 
@@ -340,7 +407,14 @@ biz_key
 ## 7. 待确认
 
 1. G-01：业务方已确认走 A（TickHub 侧发布、FinanceCoffer 只消费），待 TickHub 侧排期与实现。
-2. G-02：`financial` / `kline` / `quote` / `risk` 事件样例需 TickHub 侧确认字段口径。
+2. G-02：`kline` / `northbound` 的**单位口径已定稿**（QUOT-258 定稿）：
+
+   ```text
+     kline 成交量单位已定：股（1 手 = 100 股）；northbound 金额单位已定：元。两项均为 QUOT-258
+     产品定稿（2026-10-31），TickHub 侧按此实现，契约不再保留「待确认」。
+   ```
+
+   落库侧对应 §3.3（`volume`）、§3.3.1（存量分界）、§3.7（`net_buy_amount` / `deal_amount`）。`financial` / `quote` / `risk` 事件样例中**除单位以外**的字段口径仍待 TickHub 侧确认。
 3. G-10：已确认（DEC-0009）——CN 数据事件统一输出 `compliance_tier=C` 与 `commercial_use=false`，与 DEC-0006 的「个人研究级、仅内部使用」一致；`heartbeat` 不承载上游数据，维持只写 `provider`。
 4. G-11：大文本走 MinIO 的引用格式（`minio://bucket/key` vs presigned URL）。
 5. G-13：已关闭——上游已补齐 `kline` 与 `financial` 采集（`TickHub-CN: src/tickhub_cn/crawler/store.py:395`、`:448`；`TickHub-US: us_collector/publisher.py:49-51` 的 `DATA_TYPES` 声明 8 类），财报与 K 线无需另行新增采集任务。
@@ -359,3 +433,4 @@ biz_key
 | 2026-10-30 | v0.7 | §7 G-13 关闭：上游已补齐 `kline` 与 `financial` 采集（`TickHub-CN: src/tickhub_cn/crawler/store.py:395`、`:448`；`TickHub-US: us_collector/publisher.py:49-51` 声明 8 类 `data_type`），「CN 无 kline / 财报写入方」的假设不再成立 |
 | 2026-10-30 | v0.8 | `financial` 补可选 `amount_net_profit_deducted`（累计扣非净利润），`quote` 补可选 `pb_mrq`（厂商 PB 透传），支撑双口径估值；均为可选字段，不升 `schema_version` |
 | 2026-10-30 | v0.9 | §3.4.1 合入上游 `UNIT-AUDIT.md` §9 草案：写清 `total_market_cap` 为基本货币单位（采集端归一、消费端不再换算）、`pb_mrq` 仅 `>0` 才出现、`amount_net_profit_deducted` 缺失不得用归母顶替、`biz_key` 尾带字段代次标记 `|g2` |
+| 2026-10-31 | v0.10 | QUOT-258 定稿（上游 `UNIT-AUDIT.md` §9.4 / §9.5，commit `83cc70e`）逐字合入：§2 表与新增 §2.3 写明 `kline`=`trade_date\|period\|adjust\|g2`、`quote`=`trade_date\|ts\|g2`、北向不加代次，代次是常量、不随运行时间变化；新增 §3.3 单位规则 `volume` 为**股**（A 股 1 手 = 100 股，US 本来就是股）；新增 §3.3.1 存量分界——切流前 `dwd.stock_kline.volume` 单位是手，存量重播/迁移完成前禁止任何跨切流边的平均、求和、同比；新增 §3.4.2 写明 `total_market_cap`/`close` 为基本货币单位、DWD 无 `currency`/`market` 列、非 A 股金额不得进估值，并给出扩表触发条件；§3.7 `net_buy_amount` 定为元、新增 `deal_amount`（元；旧名 `deal_amount_wan` 作废，且该字段无 FC 消费方）、补 `(trade_date, channel)` 插入一次且不可变的消费端提示；§7 G-02 的单位口径移除「待确认」。版本号承接 `origin/main` 上已记录的 v0.9（QUOT-249），本次增量记为 v0.10 |
