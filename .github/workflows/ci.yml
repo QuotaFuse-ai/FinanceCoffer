@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# 同仓 PR 门禁用仓库内置 GITHUB_TOKEN，不需要任何 secret（QUOT-238 决定②）。
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (pytest / ruff / mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install -e ".[all]"
+
+      - name: pytest
+        run: python -m pytest -o addopts=""
+
+      - name: ruff
+        run: python -m ruff check .
+
+      # 009398c 起就有 24 条既有 mypy 错误（QUOT-244 已用同基线 diff 证明非本次引入），
+      # 先不阻断合并；清账后把 continue-on-error 去掉即可变成硬门禁。
+      - name: mypy
+        continue-on-error: true
+        run: python -m mypy
