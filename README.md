@@ -230,6 +230,7 @@ FinanceCoffer/
 - [DWS 指标口径](docs/specs/dws-metrics.md)
 - [事件契约](docs/specs/event-contract.md)
 - [TickHub 接入说明](docs/specs/tickhub-integration.md)
+- [CI 门禁与本地命令](docs/CI.md)
 
 > 开发记录、决策日志、需求追踪与内部验收材料不随公开仓库发布。
 
