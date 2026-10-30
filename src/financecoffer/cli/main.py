@@ -7,8 +7,13 @@ import typer
 from financecoffer import __version__
 from financecoffer.cli.commands import MODULES
 from financecoffer.cli.encoding import ensure_utf8_stdio
-from financecoffer.cli.options import DETAIL_TIERS, OUTPUT_FORMATS, GlobalOptions
-from financecoffer.cli.output import emit_envelope
+from financecoffer.cli.options import (
+    DETAIL_TIERS,
+    OUTPUT_FORMATS,
+    GlobalOptions,
+    parse_int_option,
+)
+from financecoffer.cli.output import emit_envelope, emit_failure
 from financecoffer.core.envelope import Envelope
 from financecoffer.core.errors import FinanceCofferError, InvalidArgumentError
 from financecoffer.core.logging import configure_logging
@@ -58,8 +63,8 @@ def root(
     refresh_cache: bool = typer.Option(
         False, "--refresh-cache", help="Refresh the query cache before running."
     ),
-    timeout: int = typer.Option(30, "--timeout", min=1, help="Operation timeout in seconds."),
-    retries: int = typer.Option(2, "--retries", min=0, help="Retries for retryable operations."),
+    timeout: str = typer.Option("30", "--timeout", help="Operation timeout in seconds (>= 1)."),
+    retries: str = typer.Option("2", "--retries", help="Retries for retryable operations (>= 0)."),
     db_url: str | None = typer.Option(None, "--db-url", help="Override FC_DB_URL."),
     trace_id: str | None = typer.Option(None, "--trace-id", help="Propagate a trace id."),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Only warnings and errors."),
@@ -75,14 +80,30 @@ def root(
     except InvalidArgumentError as exc:
         raise typer.BadParameter(exc.message, param_hint="--trace-id") from exc
 
+    resolved_output = _choice(output, OUTPUT_FORMATS, "--output")
+    resolved_tier = _choice(tier, DETAIL_TIERS, "--tier")
+    try:
+        resolved_timeout = parse_int_option(timeout, field="timeout", minimum=1)
+        resolved_retries = parse_int_option(retries, field="retries", minimum=0)
+    except InvalidArgumentError as exc:
+        emit_failure(
+            GlobalOptions(
+                output=resolved_output,
+                tier=resolved_tier,
+                trace_id=resolved_trace_id,
+                quiet=quiet,
+            ),
+            exc,
+        )
+
     ctx.obj = GlobalOptions(
-        output=_choice(output, OUTPUT_FORMATS, "--output"),
+        output=resolved_output,
         fields=fields,
-        tier=_choice(tier, DETAIL_TIERS, "--tier"),
+        tier=resolved_tier,
         no_cache=no_cache,
         refresh_cache=refresh_cache,
-        timeout=timeout,
-        retries=retries,
+        timeout=resolved_timeout,
+        retries=resolved_retries,
         db_url=db_url,
         trace_id=resolved_trace_id,
         quiet=quiet,

@@ -1,6 +1,6 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.12（设计稿）
+版本：v0.13（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
 v0.3 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
@@ -13,6 +13,7 @@ v0.9 §3.3 写明 `serve api --workers N`（N>1）时的配置来源：fork 前�
 v0.10 §3.11 `archive run` 新增可重复的 `--symbol` / `--table` 作用域（与时间、字节窗口取交集）；`archive run` / `archive restore` 非 `--dry-run` 时必须显式 `--yes`，否则退出码 2 并给出候选行数；`--dry-run` 保证无副作用；注明 `archive prune` 尚未实现。
 v0.11 新增 §3.16 `minio` 命令组（`status|ensure|start|stop`）与 `FC_MINIO_AUTOSTART` 开关：默认 `false`，打开后 `serve api` 在 fork worker 前尽力确保本地存储可用，失败只告警不阻断；路径项无默认值、只在启动时报错；`start` 拒绝非回环端点。
 v0.12 新增 §1.1 输出编码约定：CLI 入口强制 stdout/stderr 为 UTF-8，修复 Windows 重定向下 `--output json` 落盘 GBK 的问题；§3.9 补充指向 `docs/specs/dws-metrics.md` 的口径交叉引用。
+v0.13 数值区间选项第二批（8 项）改为命令内判界并走 `E_INVALID_ARGUMENT` 信封：全局 `--timeout` / `--retries`、`vector embed --batch-size`、`etl consume --batch-size|--block-ms|--claim-idle-ms`、`etl replay --limit`、`db migrate --ahead`。其中 `--batch-size` 上限由 64 统一为客户端上限 32（33–64 从静默夹取改为参数错误）；`etl replay --limit` 保留 1000 条夹取；`db migrate --ahead` 的负值校验前移到迁移执行前。语义判定见 `docs/decisions/DEC-0030`。
 
 ## 1. 全局参数
 
@@ -28,8 +29,8 @@ fcoffer [GLOBAL OPTIONS] COMMAND [ARGS]...
 | `--tier` | `full` | `brief` / `medium` / `full` |
 | `--no-cache` | off | 跳过查询缓存 |
 | `--refresh-cache` | off | 刷新查询缓存 |
-| `--timeout` | `30` | 单次查询/操作超时（秒） |
-| `--retries` | `2` | 可重试操作的次数 |
+| `--timeout` | `30` | 单次查询/操作超时（秒），`>= 1` |
+| `--retries` | `2` | 可重试操作的次数，`>= 0` |
 | `--db-url` | `.env` / 环境变量 | 临时覆盖 `FC_DB_URL`（优先级最高） |
 | `--trace-id` | 自动 | 透传链路 ID |
 | `--quiet, -q` | off | 仅 stderr 输出告警/错误 |
@@ -159,6 +160,8 @@ fcoffer etl dlq retry <event-id>|--all
 ```
 
 - 消费语义：至少一次；以 `event_id` 幂等去重。
+- `etl consume` 的可选参数：`--batch-size` 取值 1–1000，`--block-ms` 取值 0–60000，`--claim-idle-ms` 取值 `>= 0`；越界与非整数直接报 `E_INVALID_ARGUMENT`。
+- `etl replay --limit` 只拒绝 `< 1`；超过 1000 的部分按 1000 执行，实际条数以结果信封的 `count` 为准。
 - 失败重试上限默认 3 次，超限进 DLQ 并计数 `fc_dirty_data_total`。
 - 消费延迟 = `now - received_at`（最早一条排队事件的排队时长，取 `received` / `processing` 状态的最小 `received_at`），暴露为 `fc_etl_consume_lag_seconds`。不以 `event_time` 为基准：那是发布方的业务时间，历史补录会被算成巨大延迟。
 
@@ -245,7 +248,7 @@ fcoffer dws rebuild [--as-of YYYY-MM-DD] [--years N]
 
 ```bash
 fcoffer vector chunk --symbol S|--all [--chunk-size 512] [--overlap 50] [--dry-run]
-fcoffer vector embed [--pending] [--batch-size 64] [--model BAAI/bge-m3]
+fcoffer vector embed [--pending] [--batch-size 32] [--model BAAI/bge-m3]
 fcoffer vector index create|status|drop
 fcoffer vector search --symbol S --query TEXT [--year-range 2023-2025] [--top-k 10]
 fcoffer vector reindex [--symbol S]
@@ -256,6 +259,7 @@ fcoffer vector stats [--symbol S]
 
 - `search` 必须提供 `symbol`；缺省直接报参数错误，杜绝全表向量扫描。
 - `top-k` 上限 50；`year_range` 上限 10 年。
+- `--batch-size` 取值 1–32，与 embedding 客户端的单请求上限一致；超过 32 直接报参数错误，不再静默夹取。
 - 切片：512 token，重叠 50 token；`embedding vector(1024)`（bge-m3）；HNSW `vector_cosine_ops`。
 
 ### 3.11 冷热分离与 MinIO

@@ -27,10 +27,8 @@ from financecoffer.core.errors import (
 )
 from financecoffer.query.service import MAX_TOP_K
 from financecoffer.vector import DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP, VectorService
-from financecoffer.vector.embeddings import DEFAULT_BATCH_SIZE
+from financecoffer.vector.embeddings import DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE
 from financecoffer.vector.service import MAX_LIMIT
-
-_MAX_BATCH_OPTION = 64
 
 
 def _service(
@@ -179,12 +177,10 @@ def register(app: typer.Typer) -> None:
             "--pending/--no-pending",
             help="Only announcements that have no chunks yet (default: on).",
         ),
-        batch_size: int = typer.Option(
-            DEFAULT_BATCH_SIZE,
+        batch_size: str = typer.Option(
+            str(DEFAULT_BATCH_SIZE),
             "--batch-size",
-            min=1,
-            max=_MAX_BATCH_OPTION,
-            help="Inputs per request; the client caps every request at 32.",
+            help=f"Inputs per request (1-{MAX_BATCH_SIZE}).",
         ),
         model: str | None = typer.Option(
             None, "--model", help="Embedding model label (default: FC_EMBEDDING_MODEL)."
@@ -201,6 +197,9 @@ def register(app: typer.Typer) -> None:
             limit_value = parse_int_option(limit, field="limit", minimum=1, maximum=MAX_LIMIT)
             chunk_value = parse_int_option(chunk_size, field="chunk_size", minimum=1)
             overlap_value = parse_int_option(overlap, field="overlap", minimum=0)
+            batch_value = parse_int_option(
+                batch_size, field="batch_size", minimum=1, maximum=MAX_BATCH_SIZE
+            )
         except FinanceCofferError as exc:
             emit_failure(options, exc)
         report = _run(
@@ -215,7 +214,7 @@ def register(app: typer.Typer) -> None:
             ),
             chunk_size=chunk_value,
             overlap=overlap_value,
-            batch_size=batch_size,
+            batch_size=batch_value,
         )
         payload = report.payload()
         if report.failed:
