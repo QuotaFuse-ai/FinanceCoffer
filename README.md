@@ -42,7 +42,7 @@
 - **安全检索**：无 `symbol` 直接 `E_INVALID_ARGUMENT`，`top_k` 上限 50，先过滤再走向量索引。
 - **冷热分离**：3 年以上或 >8KB 的公告正文转存对象存储，主表只留指针。
 
-> **状态**：v0.1（Alpha）。已可用 —— 数据库迁移（ODS / DWD / DWS / 向量 / Ops）、ODS 落库与重放、DWD 版本快照写入、DWS 宽表构建、查询服务、REST API、MCP 三个工具、向量表结构、本地 embedding 与向量写入 CLI、公告归档列与对象存储写入、ETL 消费者（`fcoffer etl consume`）。部署入口为 `fcoffer start-all`（API 与 ETL 消费者同进程监管）。命令实现状态以 [`docs/specs/cli.md`](docs/specs/cli.md) 为准。
+> **状态**：v0.1（Alpha）。核心链路已打通 —— 数据库迁移（ODS / DWD / DWS / 向量 / Ops）、ODS 落库与重放、DWD 版本快照、DWS 宽表、ETL 消费者（位点 / 重试 / 死信）、向量切片写入与 HNSW 检索、查询服务、REST API、MCP 三个工具、对象存储冷热分离、compose 部署编排。命令与参数以 [`docs/specs/cli.md`](docs/specs/cli.md) 为准。
 
 ## 1. 定位与边界
 
@@ -75,7 +75,7 @@ python -m pytest                 # 单元 + 集成测试
 
 配置按 **内置默认值 → `.env` → 进程环境变量 → 显式参数** 的优先级加载，只读取 `FC_*` 变量，模板见 [`.env.example`](.env.example)。`.env` 按**当前工作目录**查找，因此请在仓库根目录执行 `fcoffer`；文件不存在时静默回退到进程环境变量（CI、容器和全新克隆即是这种情况）。密钥字段使用 `SecretStr`，日志与 `fcoffer config show` 会脱敏连接串口令。
 
-语义检索需要一个 OpenAI 兼容的 embedding 服务。仓库自带本地 bge-m3 启动脚本（`scripts/embedding_server.py` + `scripts/start-embedding.cmd`），默认监听 `127.0.0.1:8001`，通过 `FC_EMBEDDING_URL` 指过去即可。模型维度由 `FC_EMBEDDING_DIM` 固定为 1024（见 [DEC-0005](docs/decisions/DEC-0005-embedding-bge-m3-1024.md)）。
+语义检索需要一个 OpenAI 兼容的 embedding 服务。仓库自带本地 bge-m3 启动脚本（`scripts/embedding_server.py` + `scripts/start-embedding.cmd`），默认监听 `127.0.0.1:8001`，通过 `FC_EMBEDDING_URL` 指过去即可。模型维度固定为 1024（`FC_EMBEDDING_DIM`）。
 
 ## 3. 总体数据流
 
@@ -163,16 +163,13 @@ fcoffer query risk --symbol 600000
 | 数据库 | `financecoffer` |
 | 容器镜像 | `ghcr.io/quotafuse-ai/financecoffer` |
 
-完整清单与理由见 [`docs/specs/naming.md`](docs/specs/naming.md)。
-
 ## 7. 目录结构
 
 ```text
 FinanceCoffer/
 ├── README.md
 ├── docs/
-│   ├── specs/            # 产品规格、命名、CLI、包名、事件契约、参考对比、需求追踪
-│   └── decisions/        # 决策记录（只增不改）
+│   └── specs/            # 对外说明：产品规格、CLI、指标口径、事件契约、上游集成
 ├── pyproject.toml        # 发行名 financecoffer，入口 fcoffer
 ├── .env.example          # FC_* 配置模板（无真实凭据）
 ├── src/financecoffer/
@@ -194,7 +191,7 @@ FinanceCoffer/
 ├── scripts/              # 本地 embedding 服务与启动脚本
 ├── skills/financecoffer/ # Agent Skill（SKILL.md）
 ├── config/               # 运行时配置目录
-└── deploy/               # 容器编排与部署清单（预留）
+└── deploy/               # 容器编排与部署清单
 ```
 
 ## 8. 与上游 TickHub 的衔接
@@ -221,17 +218,15 @@ FinanceCoffer/
 
 ## 9. 文档索引
 
+对外文档只保留功能说明与使用说明：
+
 - [产品规格](docs/specs/financecoffer.md)
-- [命名规范](docs/specs/naming.md)
 - [CLI 命令清单](docs/specs/cli.md)
-- [包名与模块清单](docs/specs/packages.md)
-- [数据库结构](docs/specs/db-schema.md)
-- [DWS 指标口径与对账方案](docs/specs/dws-metrics.md)
+- [DWS 指标口径](docs/specs/dws-metrics.md)
 - [事件契约](docs/specs/event-contract.md)
-- [TickHub 侧改造方案](docs/specs/tickhub-integration.md)
-- [参考仓库 README 对比](docs/specs/reference-readme-comparison.md)
-- [需求逐条追踪](docs/specs/requirements-traceability.md)
-- [决策记录](docs/decisions/)
+- [TickHub 接入说明](docs/specs/tickhub-integration.md)
+
+> 开发记录、决策日志、需求追踪与内部验收材料不随公开仓库发布。
 
 ## 10. 许可与免责
 
