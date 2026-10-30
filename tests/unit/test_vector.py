@@ -273,6 +273,58 @@ def _service(**overrides: Any) -> VectorService:
     return VectorService(config=config(), tokenizer=CharTokenizer(), **overrides)
 
 
+def test_an_injected_exact_tokenizer_is_not_flagged_degraded() -> None:
+    service = _service()
+
+    assert service.tokenizer_name == "CharTokenizer"
+    assert service.tokenizer_degraded is False
+    assert service.tokenizer_metadata() == {
+        "tokenizer_name": "CharTokenizer",
+        "degraded": False,
+        "degraded_reason": None,
+    }
+
+
+def test_missing_tokenizer_is_disclosed_in_the_embed_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import financecoffer.vector.chunking as chunking
+
+    monkeypatch.setattr(chunking, "resolve_tokenizer_path", lambda: None)
+    chunking.default_tokenizer_selection.cache_clear()
+    try:
+        service = VectorService(config=config())
+        payload = service.embed_sources([]).payload()
+    finally:
+        chunking.default_tokenizer_selection.cache_clear()
+
+    assert payload["tokenizer_name"] == "approximate"
+    assert payload["degraded"] is True
+    assert "tokenizer.json" in payload["degraded_reason"]
+
+
+def test_missing_tokenizer_is_disclosed_in_the_chunk_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import financecoffer.vector.chunking as chunking
+
+    monkeypatch.setattr(chunking, "resolve_tokenizer_path", lambda: None)
+    monkeypatch.setattr(
+        VectorService,
+        "_sources",
+        lambda self, symbol, *, limit, pending: [],
+    )
+    chunking.default_tokenizer_selection.cache_clear()
+    try:
+        preview = VectorService(config=config()).chunk_preview(None, limit=5)
+    finally:
+        chunking.default_tokenizer_selection.cache_clear()
+
+    assert preview["tokenizer_name"] == "approximate"
+    assert preview["degraded"] is True
+    assert preview["degraded_reason"] is not None
+
+
 def test_search_requires_a_symbol_before_any_connection() -> None:
     service = _service()
 

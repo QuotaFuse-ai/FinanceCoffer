@@ -20,6 +20,7 @@ retry``: it lets a previously failed event be written again, but never past a
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Mapping
@@ -125,6 +126,16 @@ class HeartbeatResult:
 
 _REASON_MAX = 100
 
+# ``ops.etl_event_log`` column widths: a rejected payload is truncated to fit
+# rather than allowed to fail the bookkeeping insert.
+_EVENT_ID_MAX = 100
+_PROVIDER_MAX = 50
+_DATA_TYPE_MAX = 50
+_BIZ_KEY_MAX = 200
+_SYMBOL_MAX = 20
+_UNKNOWN_PROVIDER = "unknown"
+_UNKNOWN_DATA_TYPE = "unknown"
+
 
 def classify_failure(exc: BaseException) -> FailureInfo:
     """Map an exception to a DLQ ``reason`` and retryability.
@@ -204,6 +215,92 @@ def event_id_hint(payload: Mapping[str, Any] | None) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
+def rejection_event_id(payload: Mapping[str, Any], raw_text: str) -> str:
+    """The id a rejected payload is booked under.
+
+    The payload's own ``event_id`` wins so an operator can match the failure
+    against what upstream sent. A payload too broken to carry one gets a
+    deterministic synthetic id, so the same bytes do not create a new row on
+    every redelivery.
+    """
+
+    hinted = event_id_hint(payload)
+    if hinted is not None:
+        return hinted[:_EVENT_ID_MAX]
+    digest = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()[:32]
+    return f"invalid_{digest}"
+
+
+def _text_field(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def rejection_identity(payload: Mapping[str, Any], event_id: str) -> dict[str, Any]:
+    """Columns a rejected payload fills, with explicit placeholders.
+
+    Validation failed, so nothing here is trusted; the placeholders keep the
+    row insertable (``provider`` / ``data_type`` / ``biz_key`` are NOT NULL)
+    without pretending the payload got that far.
+    """
+
+    source = payload.get("source_info")
+    provider = _text_field(source.get("provider")) if isinstance(source, Mapping) else None
+    data_type = _text_field(payload.get("data_type"))
+    biz_key = _text_field(payload.get("biz_key"))
+    symbol = _text_field(payload.get("symbol"))
+    return {
+        "provider": (provider or _UNKNOWN_PROVIDER)[:_PROVIDER_MAX],
+        "data_type": (data_type or _UNKNOWN_DATA_TYPE)[:_DATA_TYPE_MAX],
+        "biz_key": (biz_key or f"unvalidated:{event_id}")[:_BIZ_KEY_MAX],
+        "symbol": symbol[:_SYMBOL_MAX] if symbol is not None else None,
+    }
+
+
+def record_rejection(
+    session: Session,
+    *,
+    payload: Mapping[str, Any],
+    raw_text: str,
+    exc: InvalidArgumentError,
+) -> None:
+    """Persist a rejected payload's failure in its own transaction.
+
+    The caller rolls the processing transaction back when an event fails, so
+    the failure row is committed on a separate session -- otherwise the only
+    trace of an invalid event would disappear with the rollback. Bookkeeping
+    must never mask the validation error, so any failure here is logged and
+    swallowed.
+    """
+
+    event_id = rejection_event_id(payload, raw_text)
+    identity = rejection_identity(payload, event_id)
+    details = exc.details or {}
+    reason = details.get("reason")
+    if not isinstance(reason, str) or not reason:
+        reason = "validation"
+    bind = session.get_bind()
+    engine = getattr(bind, "engine", bind)
+    try:
+        with Session(bind=engine) as failure_session:
+            EventLogRepository(failure_session).record_failure(
+                event_id,
+                provider=identity["provider"],
+                data_type=identity["data_type"],
+                biz_key=identity["biz_key"],
+                symbol=identity["symbol"],
+                error_class=type(exc).__name__,
+                reason=reason,
+                error=exc.message,
+            )
+            failure_session.commit()
+    except Exception as bookkeeping_exc:  # noqa: BLE001 - never mask the original error
+        _log.warning(
+            "could not record rejected event %s in ops.etl_event_log: %s",
+            event_id,
+            bookkeeping_exc,
+        )
+
+
 def dump_payload(payload: Mapping[str, Any]) -> str:
     """Serialize an operator-supplied payload for ODS ``raw_text``."""
 
@@ -256,7 +353,13 @@ def process_payload(
     retry and the dead-letter queue.
     """
 
-    event = validate_event(payload, compliance_enabled=compliance_enabled)
+    try:
+        event = validate_event(payload, compliance_enabled=compliance_enabled)
+    except InvalidArgumentError as exc:
+        # This row is the only trace of the rejection: the caller's transaction
+        # is rolled back, taking any in-transaction insert with it.
+        record_rejection(session, payload=payload, raw_text=raw_text, exc=exc)
+        raise
     registration = register_event(session, event)
     if registration.duplicate and not _reprocess_allowed(registration, force=force):
         _log.info(

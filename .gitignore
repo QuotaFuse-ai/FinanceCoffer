@@ -17,3 +17,24 @@ logs/
 
 # Internal QA process material — local only, never published
 qa_evidence/
+
+# Scratch files agent/QA runs leave at the repo root — local only, never published
+/d_env.txt
+/issue.json
+/issue_desc.md
+/issues.json
+/out.txt
+/err.txt
+/qa.json
+/qa_*.json
+/.qa_*.json
+/qa_comment.md
+/qa_desc.md
+/children.json
+/enc_probe.txt
+/enc_probe2.txt
+/emb_req.json
+/emb_resp.json
+/parent_comments.json
+/parent_thread.json
+/dws-spec-orig.tmp.md
