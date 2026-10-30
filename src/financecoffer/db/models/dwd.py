@@ -65,6 +65,10 @@ class StockFinancialSnapshot(Base):
     version: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     amount_revenue: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
     amount_net_profit: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    #: 扣非净利润, cumulative year-to-date like the other amounts.  Kept apart
+    #: from ``amount_net_profit`` on purpose: the deducted-annualized PE must
+    #: never quietly fall back to the parent-net-profit column.
+    amount_net_profit_deducted: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
     quality_status: Mapped[str] = mapped_column(String(20))
     confidence: Mapped[str | None] = mapped_column(String(20))
     balance_check_result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
@@ -212,6 +216,9 @@ class StockQuoteSnapshot(Base):
     close: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
     total_market_cap: Mapped[Decimal | None] = mapped_column(Numeric(24, 4))
     pe_ttm: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
+    #: Vendor PB (MRQ). Passed through, never derived: no balance-sheet equity
+    #: is stored, so the warehouse cannot compute it on its own.
+    pb_mrq: Mapped[Decimal | None] = mapped_column(Numeric(20, 4))
     quality_status: Mapped[str] = mapped_column(String(20))
     confidence: Mapped[str | None] = mapped_column(String(20))
     fetch_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))

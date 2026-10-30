@@ -23,7 +23,12 @@ from financecoffer.dws import (
     validate_fiscal_years,
     years_back,
 )
-from financecoffer.dws.builder import _pe_for_year, _select_years
+from financecoffer.dws.builder import (
+    _latest_deducted_quarter,
+    _pe_for_year,
+    _reference_valuation,
+    _select_years,
+)
 
 FETCH = datetime(2026, 10, 27, 1, 0, tzinfo=UTC)
 
@@ -35,6 +40,7 @@ def _financial(
     version: int = 1,
     revenue: str = "1.0000",
     profit: str | None = "1.0000",
+    deducted: str | None = None,
     quality: str = "normal",
 ) -> StockFinancialSnapshot:
     return StockFinancialSnapshot(
@@ -44,6 +50,7 @@ def _financial(
         version=version,
         amount_revenue=Decimal(revenue),
         amount_net_profit=None if profit is None else Decimal(profit),
+        amount_net_profit_deducted=None if deducted is None else Decimal(deducted),
         quality_status=quality,
         confidence="high",
         fetch_time=FETCH,
@@ -58,6 +65,7 @@ def _quote(
     close: str | None = "10.0000",
     market_cap: str | None = None,
     pe_ttm: str | None = None,
+    pb: str | None = None,
 ) -> StockQuoteSnapshot:
     return StockQuoteSnapshot(
         symbol="600000",
@@ -66,6 +74,7 @@ def _quote(
         close=None if close is None else Decimal(close),
         total_market_cap=None if market_cap is None else Decimal(market_cap),
         pe_ttm=None if pe_ttm is None else Decimal(pe_ttm),
+        pb_mrq=None if pb is None else Decimal(pb),
         quality_status="normal",
         confidence="high",
         fetch_time=FETCH,
@@ -195,6 +204,108 @@ def test_pe_ladder() -> None:
     assert _pe_for_year(
         _quote("2026-10-27", market_cap="2000000.0000"), report_date, profit
     ) == (None, "no_price", None)
+
+
+def test_latest_deducted_quarter_takes_q1_cumulative_as_is() -> None:
+    rows = [_financial("2025-03-31", report_type="Q1", deducted="30000.0000")]
+
+    quarter, reason, report = _latest_deducted_quarter(rows)
+
+    assert (quarter, reason) == (Decimal("30000.0000"), None)
+    assert report is not None and report.report_type == "Q1"
+
+
+def test_latest_deducted_quarter_subtracts_the_previous_cumulative() -> None:
+    rows = [
+        _financial("2025-06-30", report_type="HY", deducted="60000.0000"),
+        _financial("2025-09-30", report_type="Q3", deducted="110000.0000"),
+    ]
+
+    quarter, reason, report = _latest_deducted_quarter(rows)
+
+    assert (quarter, reason) == (Decimal("50000.0000"), None)
+    assert report is not None and report.report_type == "Q3"
+
+
+def test_latest_deducted_quarter_prefers_the_newest_revision() -> None:
+    rows = [
+        _financial("2024-12-31", deducted="100000.0000", version=1),
+        _financial("2024-12-31", deducted="120000.0000", version=2),
+        _financial("2025-03-31", report_type="Q1", deducted="30000.0000"),
+    ]
+
+    # A restated prior year does not leak into the next fiscal year.
+    quarter, reason, _ = _latest_deducted_quarter(rows)
+    assert (quarter, reason) == (Decimal("30000.0000"), None)
+
+
+def test_latest_deducted_quarter_reports_missing_inputs_without_guessing() -> None:
+    assert _latest_deducted_quarter([_financial("2025-03-31")]) == (
+        None,
+        "no_deducted_earnings",
+        None,
+    )
+    quarter, reason, report = _latest_deducted_quarter(
+        [_financial("2025-09-30", report_type="Q3", deducted="110000.0000")]
+    )
+    assert (quarter, reason) == (None, "no_prior_cumulative")
+    assert report is not None
+    quarter, reason, report = _latest_deducted_quarter(
+        [_financial("2025-02-28", report_type="Q4", deducted="110000.0000")]
+    )
+    assert (quarter, reason) == (None, "unsupported_report_period")
+    assert report is not None
+
+
+def test_reference_valuation_annualizes_the_deducted_quarter() -> None:
+    report = _financial("2025-09-30", report_type="Q3", deducted="110000.0000")
+    quote = _quote(
+        "2025-10-10",
+        market_cap="2000000.0000",
+        pe_ttm="15.1234",
+        pb="1.5000",
+    )
+
+    basis = _reference_valuation(quote, Decimal("50000.0000"), None, report)
+
+    assert basis["pe"] == 10.0  # 2,000,000 / (50,000 x 4)
+    assert basis["pe_source"] == "deducted_annualized"
+    assert basis["pe_reason"] is None
+    assert basis["pe_cross"] == 15.1234
+    assert basis["pe_cross_source"] == "quote.pe_ttm"
+    assert basis["pb"] == 1.5
+    assert basis["pb_reason"] is None
+    assert basis["roe"] is None
+    assert basis["roe_reason"] == "equity_unavailable"
+    assert basis["report_date"] == "2025-09-30"
+    assert basis["report_type"] == "Q3"
+    assert basis["quarter_basis"] == "single_quarter_deducted_x4"
+
+
+def test_reference_valuation_explains_every_refusal() -> None:
+    report = _financial("2025-09-30", report_type="Q3", deducted="1.0000")
+    quote = _quote("2025-10-10", market_cap="2000000.0000", pb="-1.0000")
+
+    empty = _reference_valuation(None, Decimal("1.0000"), None, report)
+    assert (empty["pe"], empty["pe_reason"]) == (None, "no_price")
+    assert (empty["pb"], empty["pb_reason"]) == (None, "no_vendor_pb")
+
+    missing_quarter = _reference_valuation(quote, None, "no_prior_cumulative", report)
+    assert (missing_quarter["pe"], missing_quarter["pe_reason"]) == (
+        None,
+        "no_prior_cumulative",
+    )
+
+    loss = _reference_valuation(quote, Decimal("0"), None, report)
+    assert (loss["pe"], loss["pe_reason"]) == (None, "non_positive_earnings")
+
+    no_cap = _reference_valuation(
+        _quote("2025-10-10"), Decimal("1.0000"), None, report
+    )
+    assert (no_cap["pe"], no_cap["pe_reason"]) == (None, "no_market_cap")
+
+    negative_pb = _reference_valuation(quote, Decimal("1.0000"), None, report)
+    assert (negative_pb["pb"], negative_pb["pb_reason"]) == (None, "no_vendor_pb")
 
 
 def test_build_report_counts_and_payload() -> None:

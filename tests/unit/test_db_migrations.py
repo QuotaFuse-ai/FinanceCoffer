@@ -26,7 +26,7 @@ def test_packaged_migrations_are_ordered_and_contiguous() -> None:
 
     versions = [item.version for item in migrations]
     assert versions == list(range(1, len(versions) + 1))
-    assert migrations[-1].version == 12
+    assert migrations[-1].version == 13
     names = [item.name for item in migrations]
     assert names == [
         "schemas",
@@ -41,6 +41,7 @@ def test_packaged_migrations_are_ordered_and_contiguous() -> None:
         "dwd_archive_columns",
         "ods_symbol_nullable",
         "dwd_financial_statement",
+        "valuation_basis",
     ]
     for item in migrations:
         assert re.fullmatch(r"[0-9a-f]{64}", item.checksum)

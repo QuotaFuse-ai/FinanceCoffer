@@ -168,6 +168,9 @@ class FinancialFields(BaseModel):
     report_type: str = Field(min_length=1)
     amount_revenue: DecimalString | None = None
     amount_net_profit: DecimalString | None = None
+    #: 扣非净利润 (year-to-date). Optional: providers that only publish the
+    #: parent figure send nothing and the deducted PE stays ``null``.
+    amount_net_profit_deducted: DecimalString | None = None
     #: ``balance`` / ``income`` / ``cashflow``; several statements share one
     #: report date, so the warehouse needs it to tell them apart.
     statement: str | None = Field(default=None, max_length=20)
@@ -212,6 +215,7 @@ class QuoteFields(BaseModel):
     close: DecimalString
     total_market_cap: DecimalString | None = None
     pe_ttm: DecimalString | None = None
+    pb_mrq: DecimalString | None = None
 
 
 class QuoteContent(BaseContent):

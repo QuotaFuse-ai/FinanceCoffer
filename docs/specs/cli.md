@@ -13,6 +13,7 @@ v0.9 §3.3 写明 `serve api --workers N`（N>1）时的配置来源：fork 前�
 v0.10 §3.11 `archive run` 新增可重复的 `--symbol` / `--table` 作用域（与时间、字节窗口取交集）；`archive run` / `archive restore` 非 `--dry-run` 时必须显式 `--yes`，否则退出码 2 并给出候选行数；`--dry-run` 保证无副作用；注明 `archive prune` 尚未实现。
 v0.11 新增 §3.16 `minio` 命令组（`status|ensure|start|stop`）与 `FC_MINIO_AUTOSTART` 开关：默认 `false`，打开后 `serve api` 在 fork worker 前尽力确保本地存储可用，失败只告警不阻断；路径项无默认值、只在启动时报错；`start` 拒绝非回环端点。
 v0.12 新增 §1.1 输出编码约定：CLI 入口强制 stdout/stderr 为 UTF-8，修复 Windows 重定向下 `--output json` 落盘 GBK 的问题；§3.9 补充指向 `docs/specs/dws-metrics.md` 的口径交叉引用。
+v0.13 `query structured` 与 MCP 工具新增可选 `valuation_basis`（`snapshot|reference`），缺省取宽表 `default_basis`；口径定义见 `docs/specs/dws-metrics.md` §4.4.5–4.4.6。
 
 ## 1. 全局参数
 
@@ -140,7 +141,7 @@ fcoffer mcp tools [--json]
 `mcp tools` 首期固定返回 3 个工具：
 
 ```text
-query_structured_data(symbol, metric, year_range)
+query_structured_data(symbol, metric, year_range, valuation_basis)
 search_announcements_semantically(symbol, query_text, year_range)
 get_risk_history(symbol)
 ```
@@ -278,10 +279,12 @@ fcoffer archive verify [--sample 100]
 ### 3.12 查询（MCP 的 CLI 等价入口）
 
 ```bash
-fcoffer query structured --symbol S --metric revenue|net_profit|roe|pe|pb --year-range 2021-2025
+fcoffer query structured --symbol S --metric revenue|net_profit|roe|pe|pb --year-range 2021-2025 [--valuation-basis snapshot|reference]
 fcoffer query risk --symbol S [--since T] [--limit 50]
 fcoffer search announcements --symbol S --query TEXT --year-range 2023-2025 [--top-k 10]
 ```
+
+`--valuation-basis` 只对 `query structured` 生效：缺省读宽表 `default_basis`（`snapshot`）；传 `reference` 切换为单季扣非年化口径；非法值报 `E_INVALID_ARGUMENT`（`details.field="valuation_basis"`）。返回的 `data.valuation` 带 `basis` / `default_basis` / `available_bases`，请求未构建的口径时返回 `pe_reason="basis_not_built"` 而不是报错。口径全文见 `docs/specs/dws-metrics.md` §4.4.5–4.4.6。
 
 输出信封：
 

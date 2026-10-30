@@ -181,7 +181,7 @@ CREATE INDEX idx_ann_chunk_embedding
 
 | 工具 | 入参 | 行为 |
 | --- | --- | --- |
-| `query_structured_data` | `symbol, metric, year_range` | 查 DWS 宽表，`metric` 走白名单 |
+| `query_structured_data` | `symbol, metric, year_range, valuation_basis` | 查 DWS 宽表，`metric` 走白名单；`valuation_basis` 可选 `snapshot` / `reference` |
 | `search_announcements_semantically` | `symbol, query_text, year_range` | 先过滤后向量 |
 | `get_risk_history` | `symbol` | 返回历史风险事件 |
 

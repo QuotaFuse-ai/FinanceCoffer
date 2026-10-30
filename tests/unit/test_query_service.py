@@ -14,6 +14,7 @@ from financecoffer.query.service import (
     QueryService,
     normalize_symbol,
     parse_since,
+    parse_valuation_basis,
     parse_year_range,
 )
 
@@ -320,6 +321,95 @@ def test_structured_rejects_unknown_metric_before_connecting() -> None:
 
     with pytest.raises(InvalidArgumentError, match="metric must be one of"):
         service.structured("600000", metric="ebitda")
+
+    assert db.calls == 0
+
+
+def test_parse_valuation_basis_normalizes_and_rejects() -> None:
+    assert parse_valuation_basis(None) is None
+    assert parse_valuation_basis(" Snapshot ") == "snapshot"
+    assert parse_valuation_basis("REFERENCE") == "reference"
+    with pytest.raises(InvalidArgumentError) as excinfo:
+        parse_valuation_basis("vibe")
+    assert excinfo.value.details == {"field": "valuation_basis", "value": "vibe"}
+
+
+def _two_basis_metrics() -> dict[str, Any]:
+    return {
+        "years": [{"year": 2025, "revenue": 1.0}],
+        "valuation": {
+            "as_of": "2026-09-30",
+            "price_date": "2026-09-30",
+            "price_close": "10.0000",
+            "default_basis": "snapshot",
+            "pe": 18.0,
+            "pe_source": "quote.pe_ttm",
+            "pe_reason": None,
+            "pb": None,
+            "pb_reason": "no_equity",
+            "bases": {
+                "snapshot": {
+                    "pe": 18.0,
+                    "pe_source": "quote.pe_ttm",
+                    "pe_reason": None,
+                    "pb": None,
+                    "pb_reason": "no_equity",
+                },
+                "reference": {
+                    "pe": 12.0,
+                    "pe_source": "deducted_annualized",
+                    "pe_reason": None,
+                    "pb": 1.5,
+                    "pb_reason": None,
+                },
+            },
+        },
+    }
+
+
+def test_structured_defaults_to_the_stored_basis() -> None:
+    service, _ = _service([_structured_row(_two_basis_metrics())], STRUCTURED_COLUMNS)
+
+    valuation = service.structured("600000").data["valuation"]
+
+    assert valuation["basis"] == "snapshot"
+    assert valuation["default_basis"] == "snapshot"
+    assert valuation["available_bases"] == ["snapshot", "reference"]
+    assert valuation["pe"] == 18.0
+    assert valuation["price_close"] == "10.0000"
+
+
+def test_structured_returns_the_requested_basis() -> None:
+    service, _ = _service([_structured_row(_two_basis_metrics())], STRUCTURED_COLUMNS)
+
+    valuation = service.structured("600000", valuation_basis="reference").data["valuation"]
+
+    assert valuation["basis"] == "reference"
+    assert valuation["pe"] == 12.0
+    assert valuation["pb"] == 1.5
+    assert "pe_reason" not in valuation or valuation["pe_reason"] is None
+
+
+def test_structured_request_for_an_unbuilt_basis_is_explained_not_raised() -> None:
+    legacy = {"valuation": {"pe": 18.0, "pe_source": "quote.pe_ttm", "pe_reason": None}}
+    service, _ = _service([_structured_row(legacy)], STRUCTURED_COLUMNS)
+
+    default = service.structured("600000").data["valuation"]
+    reference = service.structured("600000", valuation_basis="reference").data["valuation"]
+
+    assert default["basis"] == "snapshot"
+    assert default["pe"] == 18.0
+    assert default["available_bases"] == ["snapshot"]
+    assert reference["basis"] == "reference"
+    assert reference["pe"] is None
+    assert reference["pe_reason"] == "basis_not_built"
+
+
+def test_structured_rejects_unknown_basis_before_connecting() -> None:
+    service, db = _service([], STRUCTURED_COLUMNS)
+
+    with pytest.raises(InvalidArgumentError, match="snapshot or reference"):
+        service.structured("600000", valuation_basis="dcf")
 
     assert db.calls == 0
 

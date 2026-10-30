@@ -156,6 +156,11 @@ def _write_financial(
             precision=20,
             field_name="content.structured_fields.amount_net_profit",
         ),
+        amount_net_profit_deducted=_exact_numeric(
+            fields.amount_net_profit_deducted,
+            precision=20,
+            field_name="content.structured_fields.amount_net_profit_deducted",
+        ),
         balance_check_result=_balance_check_result(event),
         **_quality_values(event),
         fetch_time=fetch_time_for(event),
@@ -240,6 +245,9 @@ def _write_quote(
         ),
         pe_ttm=_exact_numeric(
             fields.pe_ttm, precision=20, field_name="content.structured_fields.pe_ttm"
+        ),
+        pb_mrq=_exact_numeric(
+            fields.pb_mrq, precision=20, field_name="content.structured_fields.pb_mrq"
         ),
         **_quality_values(event),
         fetch_time=fetch_time_for(event),
