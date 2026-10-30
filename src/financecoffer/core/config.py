@@ -88,6 +88,14 @@ class Config(BaseModel):
     etl_backoff_ms: int = Field(default=1000, ge=0, le=60_000)
     etl_claim_idle_ms: int = Field(default=60_000, ge=0)
 
+    # DWS build-time default valuation basis. A build writes it into
+    # ``metrics_json.valuation.default_basis`` unless ``--valuation-basis``
+    # overrides it; the read side still lets each caller pick a basis per
+    # request. The closed set is a ``Literal`` on purpose: an unknown value must
+    # fail the load, because ``loader._extract_known`` would otherwise have to
+    # guess between "typo" and "unset".
+    metrics_profile: Literal["snapshot", "reference"] = "snapshot"
+
     # Compliance marking (DEC-0010). Off means the fields are not considered at
     # all: nothing is written to, read from or returned from the marking columns.
     compliance_enabled: bool = False
@@ -151,6 +159,13 @@ class Config(BaseModel):
         if not value.startswith(("http://", "https://")):
             raise ValueError("FC_EMBEDDING_URL must be an http(s) URL")
         return value
+
+    @field_validator("metrics_profile", mode="before")
+    @classmethod
+    def _normalize_metrics_profile(cls, value: Any) -> Any:
+        """Match the reader's tolerance for case and surrounding spaces."""
+
+        return value.strip().lower() if isinstance(value, str) else value
 
     @field_validator("log_level")
     @classmethod

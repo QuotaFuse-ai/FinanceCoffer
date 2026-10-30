@@ -189,6 +189,27 @@ def validate_fiscal_years(value: int) -> int:
     return value
 
 
+def resolve_default_basis(value: str | None, config: Config) -> str:
+    """Return the basis a build writes as ``valuation.default_basis``.
+
+    Precedence: the explicit value (the CLI flag) beats ``FC_METRICS_PROFILE``,
+    which beats ``snapshot``. The flag is normalized like the read-side option
+    so `` Reference `` and ``reference`` mean the same thing, and a value
+    outside :data:`VALUATION_BASES` is refused instead of silently ignored --
+    the caller asked for a row shape this build cannot produce.
+    """
+
+    if value is None:
+        return config.metrics_profile
+    basis = value.strip().lower()
+    if basis not in VALUATION_BASES:
+        raise InvalidArgumentError(
+            f"valuation_basis must be one of {list(VALUATION_BASES)}",
+            details={"field": "valuation_basis", "value": value},
+        )
+    return basis
+
+
 def years_back(day: date, years: int) -> date:
     """Return ``day`` minus ``years`` calendar years (Feb 29 falls back to 28)."""
 
@@ -620,11 +641,15 @@ class DwsService:
         build_all: bool = False,
         as_of: str | None = None,
         fiscal_years: int = DEFAULT_FISCAL_YEARS,
+        default_basis: str | None = None,
     ) -> BuildReport:
         validate_fiscal_years(fiscal_years)
+        basis = resolve_default_basis(default_basis, self.config)
         day = parse_as_of(as_of)
         targets = self._targets(symbols, build_all=build_all)
-        results = tuple(self._build_one(symbol, day, fiscal_years) for symbol in targets)
+        results = tuple(
+            self._build_one(symbol, day, fiscal_years, basis) for symbol in targets
+        )
         return BuildReport(as_of=day, fiscal_years=fiscal_years, results=results)
 
     def show(self, symbol: str) -> dict[str, Any]:
@@ -674,14 +699,16 @@ class DwsService:
         except SQLAlchemyError as exc:
             raise StorageError(f"cannot list DWD symbols: {exc}") from exc
 
-    def _build_one(self, symbol: str, day: date, fiscal_years: int) -> SymbolResult:
+    def _build_one(
+        self, symbol: str, day: date, fiscal_years: int, default_basis: str
+    ) -> SymbolResult:
         try:
             with self.database.session_scope() as session:
                 _lock(session, symbol)
                 existing = session.get(StockAgentAnalysisWide, symbol)
                 if existing is not None and _stored_as_of(existing) > day:
                     raise _Skip("stale_as_of")
-                values = self._compose(session, symbol, day, fiscal_years)
+                values = self._compose(session, symbol, day, fiscal_years, default_basis)
                 self._check_row(values, fiscal_years=fiscal_years, day=day)
                 AgentAnalysisWideRepository(session).upsert(**values)
         except _Skip as exc:
@@ -701,6 +728,7 @@ class DwsService:
         symbol: str,
         day: date,
         fiscal_years: int,
+        default_basis: str = DEFAULT_VALUATION_BASIS,
     ) -> dict[str, Any]:
         financial_rows = list(
             session.scalars(
@@ -804,6 +832,13 @@ class DwsService:
             "roe": None,
             "roe_reason": "equity_unavailable",
         }
+        bases = {
+            "snapshot": snapshot_basis,
+            "reference": _reference_valuation(
+                quote, deducted_quarter, deducted_reason, deducted_report
+            ),
+        }
+        mirror = bases[default_basis]
         metrics = {
             "schema": METRICS_SCHEMA,
             "basis": "annual",
@@ -819,18 +854,16 @@ class DwsService:
                 "as_of": day.isoformat(),
                 "price_date": _iso(quote.trade_date) if quote is not None else None,
                 "price_close": money(quote.close) if quote is not None else None,
-                "default_basis": DEFAULT_VALUATION_BASIS,
-                "pe_source": latest_pe_source,
-                "pe": latest_pe,
-                "pe_reason": latest_pe_reason,
-                "pb": None,
-                "pb_reason": "no_equity",
-                "bases": {
-                    "snapshot": snapshot_basis,
-                    "reference": _reference_valuation(
-                        quote, deducted_quarter, deducted_reason, deducted_report
-                    ),
-                },
+                "default_basis": default_basis,
+                # The flat keys are a mirror of the default basis (spec
+                # §4.4.5), so a caller that never learned about ``bases``
+                # reads the same numbers the echo reports.
+                "pe_source": mirror.get("pe_source"),
+                "pe": mirror.get("pe"),
+                "pe_reason": mirror.get("pe_reason"),
+                "pb": mirror.get("pb"),
+                "pb_reason": mirror.get("pb_reason"),
+                "bases": bases,
             },
             "quality": _quality_block(selections, missing),
         }

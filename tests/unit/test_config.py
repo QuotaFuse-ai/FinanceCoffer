@@ -124,6 +124,32 @@ def test_invalid_log_level_is_rejected() -> None:
         load_config(env={"FC_LOG_LEVEL": "LOUD"})
 
 
+def test_metrics_profile_defaults_to_snapshot_and_reads_fc_env() -> None:
+    assert load_config(env={}).metrics_profile == "snapshot"
+    assert load_config(env={"FC_METRICS_PROFILE": "reference"}).metrics_profile == "reference"
+    # Same tolerance as the read-side option: case and surrounding spaces.
+    assert load_config(env={"FC_METRICS_PROFILE": " Reference "}).metrics_profile == "reference"
+
+
+def test_metrics_profile_reads_the_env_file(tmp_path: Path) -> None:
+    """The field must be registered on ``Config`` or ``_extract_known`` drops it."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("FC_METRICS_PROFILE=reference\n", encoding="utf-8")
+
+    assert load_config(env={}, env_file=env_file).metrics_profile == "reference"
+
+
+def test_unknown_metrics_profile_is_a_config_error() -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env={"FC_METRICS_PROFILE": "recommended"})
+
+    error = excinfo.value
+    assert error.code.value == "E_CONFIG"
+    assert error.details is not None
+    assert error.details["errors"][0]["field"] == "metrics_profile"
+
+
 @pytest.mark.parametrize("variable", sorted(f"FC_{name.upper()}" for name in SECRET_FIELDS))
 def test_template_placeholder_secret_is_a_config_error(variable: str) -> None:
     """The copy-me template placeholder must never be accepted as a credential."""

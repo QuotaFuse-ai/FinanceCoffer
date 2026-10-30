@@ -29,7 +29,7 @@ TOOL_NAMES = [
     "get_risk_history",
 ]
 TOOL_PARAMS = {
-    "query_structured_data": ["symbol", "metric", "year_range"],
+    "query_structured_data": ["symbol", "metric", "year_range", "valuation_basis"],
     "search_announcements_semantically": ["symbol", "query_text", "year_range"],
     "get_risk_history": ["symbol"],
 }
@@ -58,11 +58,24 @@ class StubService:
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
 
     def structured(
-        self, symbol: str, *, metric: str | None = None, year_range: str | None = None
+        self,
+        symbol: str,
+        *,
+        metric: str | None = None,
+        year_range: str | None = None,
+        valuation_basis: str | None = None,
     ) -> QueryResult:
         normalized = normalize_symbol(symbol)
         self.calls.append(
-            ("structured", (normalized,), {"metric": metric, "year_range": year_range})
+            (
+                "structured",
+                (normalized,),
+                {
+                    "metric": metric,
+                    "year_range": year_range,
+                    "valuation_basis": valuation_basis,
+                },
+            )
         )
         return QueryResult(
             data={"symbol": normalized, "years": [{"year": 2023, "revenue": "123456789.0000"}]},
@@ -248,13 +261,22 @@ def test_structured_call_passes_the_projection_and_year_window() -> None:
         await session.initialize()
         outcome["result"] = await session.call_tool(
             "query_structured_data",
-            {"symbol": "600519", "metric": "roe", "year_range": "2020-2023"},
+            {
+                "symbol": "600519",
+                "metric": "roe",
+                "year_range": "2020-2023",
+                "valuation_basis": "reference",
+            },
         )
 
     outcome = _run(scenario)
     _envelope(outcome["result"])
     assert outcome["service"].calls == [
-        ("structured", ("600519",), {"metric": "roe", "year_range": "2020-2023"})
+        (
+            "structured",
+            ("600519",),
+            {"metric": "roe", "year_range": "2020-2023", "valuation_basis": "reference"},
+        )
     ]
 
 

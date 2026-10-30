@@ -56,6 +56,10 @@ x-app-env: &app-env
   FC_ETL_MAX_ATTEMPTS: "${FC_ETL_MAX_ATTEMPTS:-3}"
   FC_ETL_BACKOFF_MS: "${FC_ETL_BACKOFF_MS:-1000}"
   FC_ETL_CLAIM_IDLE_MS: "${FC_ETL_CLAIM_IDLE_MS:-60000}"
+  # Build-time valuation default. ``:-`` for the same reason as the ETL keys:
+  # an env file written before this key existed must fall back to the Config
+  # default (snapshot) instead of refusing to start.
+  FC_METRICS_PROFILE: "${FC_METRICS_PROFILE:-snapshot}"
   FC_COMPLIANCE_ENABLED: "${FC_COMPLIANCE_ENABLED:?set FC_COMPLIANCE_ENABLED}"
   FC_RATE_LIMIT_ENABLED: "${FC_RATE_LIMIT_ENABLED:?set FC_RATE_LIMIT_ENABLED}"
   FC_RATE_LIMIT_PER_MINUTE: "${FC_RATE_LIMIT_PER_MINUTE:?set FC_RATE_LIMIT_PER_MINUTE}"

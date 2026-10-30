@@ -1,6 +1,6 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.15（设计稿）
+版本：v0.16（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
 v0.3 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
@@ -16,6 +16,7 @@ v0.12 新增 §1.1 输出编码约定：CLI 入口强制 stdout/stderr 为 UTF-8
 v0.13 数值区间选项第二批（8 项）改为命令内判界并走 `E_INVALID_ARGUMENT` 信封：全局 `--timeout` / `--retries`、`vector embed --batch-size`、`etl consume --batch-size|--block-ms|--claim-idle-ms`、`etl replay --limit`、`db migrate --ahead`。其中 `--batch-size` 上限由 64 统一为客户端上限 32（33–64 从静默夹取改为参数错误）；`etl replay --limit` 保留 1000 条夹取；`db migrate --ahead` 的负值校验前移到迁移执行前。语义判定见 `docs/decisions/DEC-0030`。
 v0.14 命令树总表修正：§2 的 `vector index` 展开为实装的 `vector index create|status|drop`（与 §3.10 对齐）；删除不存在的 `fcoffer dwd announcement list|show`（`dwd` 只有 `show|versions|backfill|verify`，公告元数据当前无 CLI 查询入口）。
 v0.15 `query structured` 与 MCP 工具新增可选 `valuation_basis`（`snapshot|reference`），缺省取宽表 `default_basis`；口径定义见 `docs/specs/dws-metrics.md` §4.4.5–4.4.6。
+v0.16 构建期默认口径可配置：新增 `FC_METRICS_PROFILE`（`snapshot|reference`，默认 `snapshot`，非法值加载即报 `E_CONFIG`），`dws build` / `dws rebuild` 新增 `--valuation-basis`（优先级 命令行 > `FC_METRICS_PROFILE` > `snapshot`），构建时写入 `metrics_json.valuation.default_basis`，顶层 `pe` / `pb` 等扁平键改为该口径的镜像。`query structured` 的 `--valuation-basis` 仍是**单次读取覆盖**，两者语义不同（§3.9、§3.12）。同时补回显回归口径：REST 与 MCP 一致、未构建口径 `basis_not_built` 不回落、无 `default_basis` 的历史行折叠为 `snapshot`。前端落地在 LadderStock 个股深挖页 / 研究报告页（该端当前尚无 FinanceCoffer 适配器，也没有 PE/PB/ROE 展示位）。
 
 ## 1. 全局参数
 
@@ -217,13 +218,18 @@ fcoffer dwd verify [--symbol S] [--report-date D]
 ### 3.9 DWS
 
 ```bash
-fcoffer dws build (--symbol S [--symbol S ...] | --all) [--as-of YYYY-MM-DD] [--years N]
+fcoffer dws build (--symbol S [--symbol S ...] | --all) [--as-of YYYY-MM-DD] [--years N] \
+                  [--valuation-basis snapshot|reference]
 fcoffer dws show SYMBOL
-fcoffer dws rebuild [--as-of YYYY-MM-DD] [--years N]
+fcoffer dws rebuild [--as-of YYYY-MM-DD] [--years N] [--valuation-basis snapshot|reference]
 ```
 
 - `build` 每个 `symbol` 产出一行宽表快照；`--symbol` 与 `--all` 互斥，且必须给出其一，否则参数错误（退出码 2）。
 - `--as-of` 缺省为 UTC 当天，只按该日期截断 DWD 事实，不用 `now()` 参与计算；`--years` 取 1–10，默认 5。
+- `--valuation-basis` 是**构建期默认口径**：它写进 `metrics_json.valuation.default_basis`，决定「读取时不传参的调用方看到哪套数字」。两套口径每次构建都会算，参数只移动默认指针。
+  优先级：命令行 > `FC_METRICS_PROFILE` > `snapshot`。取值归一化（大小写与首尾空格），非法值报 `E_INVALID_ARGUMENT`（`details.field="valuation_basis"`），不静默降级；
+  `FC_METRICS_PROFILE` 非法时命令在连库之前就以 `E_CONFIG`（退出码 3）失败（该字段注册在 `Config` 上，拼错不会被环境变量加载器静默丢弃）。
+- 顶层 `pe` / `pe_source` / `pe_reason` / `pb` / `pb_reason` 是 `default_basis` 的**镜像**，只为兼容只认这几个键的旧读取方；两者冲突时以 `bases[default_basis]` 为准。
 - 单个 symbol 失败或跳过不影响其他 symbol；存在失败时输出完整 `built` / `skipped` / `failed` 明细，
   并以 `E_PARTIAL_FAILURE`（退出码 8）返回。
 - `rebuild` 等价于 `build --all`。
@@ -238,8 +244,9 @@ fcoffer dws rebuild [--as-of YYYY-MM-DD] [--years N]
   缺失年份显式为 `null` 且 `data_status="missing"`，不做零填充或插值。
 - 年度质量只落在 `metrics_json.quality`（`bad_years` / `suspicious_years` / `missing_years`），顶层不再设
   `quality_status` / `confidence` 列。
-- 金额为元、4 位小数的定长字符串；`roe` / `pb` 当前恒为 `null` 并给出原因；`pe` 使用 `--as-of` 时点的估值快照
-  （临时口径）。
+- 金额为元、4 位小数的定长字符串；`snapshot` 口径的 `pb` 与两个口径的 `roe` 保持 `null` 并给出原因
+  （`no_equity` / `equity_unavailable`），`reference` 口径的 `pb` 来自上游 `pb_mrq` 透传。两套口径的字段级映射、
+  NULL 与脏数据规则见 `docs/specs/dws-metrics.md` §4.4.5–4.4.6，本节不复述公式。
 - `risk_summary` 覆盖 `(as_of − 3 年, as_of]`；`latest_announcements` 最多 20 条，按 `ann_date DESC, id DESC`。
 - 合规开关关闭时 `compliance_tier` / `commercial_use` 保持 `NULL`；开启时同一 symbol 的 DWD 源行必须同档同商用标记，
   否则该 symbol 失败（不猜测、不取最严档）。
@@ -288,7 +295,22 @@ fcoffer query risk --symbol S [--since T] [--limit 50]
 fcoffer search announcements --symbol S --query TEXT --year-range 2023-2025 [--top-k 10]
 ```
 
-`--valuation-basis` 只对 `query structured` 生效：缺省读宽表 `default_basis`（`snapshot`）；传 `reference` 切换为单季扣非年化口径；非法值报 `E_INVALID_ARGUMENT`（`details.field="valuation_basis"`）。返回的 `data.valuation` 带 `basis` / `default_basis` / `available_bases`，请求未构建的口径时返回 `pe_reason="basis_not_built"` 而不是报错。口径全文见 `docs/specs/dws-metrics.md` §4.4.5–4.4.6。
+`--valuation-basis` 在两侧语义不同，不要混用：
+
+- `query structured`（以及 REST / MCP 的 `valuation_basis` 参数）：**单次读取覆盖**。缺省用该行持久化的 `default_basis`，
+  该行是双口径时不会因为「构建时的默认值」而锁死——调用方每次都能改。
+- `dws build` / `dws rebuild`：**构建期默认**（§3.9），只决定新行写入的 `default_basis`，不影响已有行的读取覆盖能力。
+
+两侧取值闭集都是 `snapshot|reference`，大小写与首尾空格归一化，非法值报 `E_INVALID_ARGUMENT`（`details.field="valuation_basis"`）。
+
+返回的 `data.valuation` 固定带 `basis`（本次实际口径）、`default_basis`（行内持久值）、`available_bases`（该行已构建的口径）。
+`basis` 与 `default_basis` 均取自持久化字段，不由请求推算：请求一个该行未构建的口径时**不报错也不回落**，返回 `pe=null`、
+`pe_reason="basis_not_built"`，由 `available_bases` 说明可选范围。没有 `bases` / `default_basis` 的历史行折叠为单口径
+`snapshot`，读取不报错且 `default_basis` 回显 `snapshot`。REST `GET /v1/structured/{symbol}?valuation_basis=` 与
+MCP `query_structured_data(..., valuation_basis=...)` 与本命令同语义、同回显。口径全文见 `docs/specs/dws-metrics.md` §4.4.5–4.4.6。
+
+前端落地点：LadderStock 的个股深挖页 / 研究报告页。该端目前没有 FinanceCoffer 适配器，也没有 PE/PB/ROE 展示位，
+本版只交付后端契约；界面接入按产品侧单独立项推进。
 
 输出信封：
 

@@ -543,6 +543,88 @@ def test_dwd_verify_surfaces_a_partial_failure(fake_dwd) -> None:
     assert payload["error"]["details"]["failed"] == 1
 
 
+# -- dws: build-time default basis (QUOT-244) --------------------------------
+
+
+class _FakeDws:
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def __init__(self, **_: object) -> None:
+        self.closed = False
+
+    def build(self, symbols, **kwargs: object):
+        _FakeDws.calls.append((tuple(symbols), kwargs))
+
+        class _Report:
+            failed = False
+
+            def payload(self) -> dict[str, object]:
+                return {"counts": {"built": len(symbols), "skipped": 0, "failed": 0}}
+
+        return _Report()
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def fake_dws(monkeypatch):
+    from financecoffer.cli.commands import warehouse as warehouse_module
+
+    _FakeDws.calls = []
+    monkeypatch.setattr(warehouse_module, "load_cli_config", lambda **_: _config())
+    monkeypatch.setattr(warehouse_module, "DwsService", _FakeDws)
+    return warehouse_module
+
+
+def test_dws_build_forwards_the_valuation_basis(fake_dws) -> None:
+    result = _invoke("dws", "build", "--symbol", "600000", "--valuation-basis", "reference")
+
+    assert result.exit_code == 0
+    assert _FakeDws.calls[0][1]["default_basis"] == "reference"
+
+
+def test_dws_build_without_the_flag_leaves_the_choice_to_config(fake_dws) -> None:
+    result = _invoke("dws", "build", "--symbol", "600000")
+
+    assert result.exit_code == 0
+    assert _FakeDws.calls[0][1]["default_basis"] is None
+
+
+def test_dws_rebuild_forwards_the_valuation_basis(fake_dws) -> None:
+    result = _invoke("dws", "rebuild", "--valuation-basis", "snapshot")
+
+    assert result.exit_code == 0
+    assert _FakeDws.calls[0][0] == ()
+    assert _FakeDws.calls[0][1]["default_basis"] == "snapshot"
+    assert _FakeDws.calls[0][1]["build_all"] is True
+
+
+def test_dws_build_rejects_an_unknown_basis_before_connecting(monkeypatch) -> None:
+    from financecoffer.cli.commands import warehouse as warehouse_module
+
+    # Real DwsService, empty config: the flag must fail before any DB checkout.
+    monkeypatch.setattr(warehouse_module, "load_cli_config", lambda **_: _config())
+
+    result = _invoke("dws", "build", "--symbol", "600000", "--valuation-basis", "vibe")
+
+    assert result.exit_code != 0
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "E_INVALID_ARGUMENT"
+    assert payload["error"]["details"]["field"] == "valuation_basis"
+
+
+def test_dws_build_fails_fast_on_an_unknown_metrics_profile(monkeypatch) -> None:
+    monkeypatch.setenv("FC_METRICS_PROFILE", "recommended")
+
+    result = _invoke("dws", "build", "--symbol", "600000")
+
+    assert result.exit_code == 3
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "E_CONFIG"
+    assert payload["error"]["details"]["errors"][0]["field"] == "metrics_profile"
+
+
 # -- serve: admin / start-all -----------------------------------------------
 
 

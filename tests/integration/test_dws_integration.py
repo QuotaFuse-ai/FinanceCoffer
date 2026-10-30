@@ -298,12 +298,40 @@ def test_five_year_series(db: Database) -> None:
         "as_of": AS_OF,
         "price_date": None,
         "price_close": None,
+        "default_basis": "snapshot",
         "pe_source": None,
         "pe": None,
         "pe_reason": "no_price",
         "pb": None,
         "pb_reason": "no_equity",
+        "bases": {
+            "snapshot": {
+                "pe": None,
+                "pe_source": None,
+                "pe_reason": "no_price",
+                "pb": None,
+                "pb_reason": "no_equity",
+                "roe": None,
+                "roe_reason": "equity_unavailable",
+            },
+            "reference": {
+                "pe": None,
+                "pe_source": None,
+                "pe_reason": "no_price",
+                "pe_cross_source": "quote.pe_ttm",
+                "pe_cross": None,
+                "pb": None,
+                "pb_reason": "no_vendor_pb",
+                "roe": None,
+                "roe_reason": "equity_unavailable",
+                "report_date": None,
+                "report_type": None,
+                "quarter_basis": "single_quarter_deducted_x4",
+            },
+        },
     }
+    # The flat keys are the default basis' mirror, never a second computation.
+    assert metrics["valuation"]["pe"] == metrics["valuation"]["bases"]["snapshot"]["pe"]
     for year in (2022, 2023, 2025, 2026):
         assert year_record(metrics, year)["pe_reason"] == "no_price"
 

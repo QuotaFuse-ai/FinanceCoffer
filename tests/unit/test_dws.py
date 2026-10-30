@@ -7,19 +7,24 @@ end-to-end contract is covered by ``tests/integration/test_dws_integration.py``.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
+from financecoffer.core.config import Config
 from financecoffer.core.errors import ErrorCode, InvalidArgumentError
 from financecoffer.db.models.dwd import StockFinancialSnapshot, StockQuoteSnapshot
 from financecoffer.dws import (
     BuildReport,
+    DwsService,
     SymbolResult,
     money,
     parse_as_of,
     rate,
+    resolve_default_basis,
     validate_fiscal_years,
     years_back,
 )
@@ -329,3 +334,90 @@ def test_build_report_counts_and_payload() -> None:
         "skipped": [{"symbol": "600001", "reason": "no_financial_data"}],
         "failed": [{"symbol": "600002", "reason": "compliance_mismatch"}],
     }
+
+
+# -- build-time default basis (QUOT-244) ------------------------------------
+
+
+class _Scalars:
+    def __init__(self, rows: list[Any]) -> None:
+        self._rows = rows
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self._rows)
+
+    def first(self) -> Any | None:
+        return self._rows[0] if self._rows else None
+
+
+class _StubSession:
+    """Just enough ``Session`` for ``_compose``: one scripted result per read."""
+
+    def __init__(self, *results: list[Any]) -> None:
+        self._results = list(results)
+
+    def scalars(self, _statement: Any) -> _Scalars:
+        return _Scalars(self._results.pop(0))
+
+
+def _compose_values(default_basis: str) -> tuple[DwsService, dict[str, Any]]:
+    session = _StubSession(
+        [
+            _financial("2025-09-30", report_type="Q3", deducted="110000.0000"),
+            _financial("2025-06-30", report_type="Q2", deducted="60000.0000"),
+            _financial("2025-12-31", profit="100000.0000"),
+        ],
+        [_quote("2026-01-05", market_cap="2000000.0000", pe_ttm="15.0000", pb="1.5000")],
+        [],  # risk events
+        [],  # announcements
+    )
+    service = DwsService(config=Config())
+    return service, service._compose(session, "600000", date(2026, 10, 27), 5, default_basis)
+
+
+def test_resolve_default_basis_precedence() -> None:
+    assert resolve_default_basis(None, Config()) == "snapshot"
+    configured = Config(metrics_profile="reference")
+    assert resolve_default_basis(None, configured) == "reference"
+    assert resolve_default_basis(" Snapshot ", configured) == "snapshot"
+    assert resolve_default_basis("REFERENCE", Config()) == "reference"
+
+    with pytest.raises(InvalidArgumentError) as excinfo:
+        resolve_default_basis("vibe", Config())
+    assert excinfo.value.details == {"field": "valuation_basis", "value": "vibe"}
+
+
+def test_build_rejects_an_unknown_basis_before_touching_the_database() -> None:
+    service = DwsService(config=Config())
+
+    with pytest.raises(InvalidArgumentError, match="valuation_basis"):
+        service.build(["600000"], default_basis="vibe")
+
+
+def test_compose_writes_the_configured_default_basis_and_its_mirror() -> None:
+    service, values = _compose_values("reference")
+
+    valuation = values["metrics_json"]["valuation"]
+    assert valuation["default_basis"] == "reference"
+    assert set(valuation["bases"]) == {"snapshot", "reference"}
+    # Both bases are still computed; only the default pointer moves.
+    assert valuation["bases"]["snapshot"]["pe"] == 15.0
+    assert valuation["bases"]["reference"]["pe"] == 10.0
+    # The flat keys mirror the default basis (spec §4.4.5).
+    assert valuation["pe"] == 10.0
+    assert valuation["pe_source"] == "deducted_annualized"
+    assert valuation["pb"] == 1.5
+    assert valuation["pb_reason"] is None
+    assert valuation["pe"] == valuation["bases"][valuation["default_basis"]]["pe"]
+
+    service._check_row(values, fiscal_years=5, day=date(2026, 10, 27))
+
+
+def test_compose_keeps_the_snapshot_mirror_by_default() -> None:
+    _service, values = _compose_values("snapshot")
+
+    valuation = values["metrics_json"]["valuation"]
+    assert valuation["default_basis"] == "snapshot"
+    assert valuation["pe"] == 15.0
+    assert valuation["pb"] is None
+    assert valuation["pb_reason"] == "no_equity"

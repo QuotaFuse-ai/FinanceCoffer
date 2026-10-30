@@ -177,6 +177,7 @@ def _run_build(
     build_all: bool,
     as_of: str | None,
     years: int,
+    valuation_basis: str | None,
 ) -> None:
     service = _service(options)
     try:
@@ -185,6 +186,7 @@ def _run_build(
             build_all=build_all,
             as_of=as_of,
             fiscal_years=years,
+            default_basis=valuation_basis,
         )
     except FinanceCofferError as exc:
         emit_failure(options, exc)
@@ -227,6 +229,14 @@ def _register_dws(app: typer.Typer) -> None:
             "--years",
             help=f"Fiscal-year window, newest year first (1-{MAX_FISCAL_YEARS}).",
         ),
+        valuation_basis: str | None = typer.Option(
+            None,
+            "--valuation-basis",
+            help=(
+                "Basis stored as the row's valuation.default_basis: snapshot|reference "
+                "(default: FC_METRICS_PROFILE, else snapshot)."
+            ),
+        ),
     ) -> None:
         options = from_context(ctx)
         try:
@@ -257,6 +267,7 @@ def _register_dws(app: typer.Typer) -> None:
             build_all=all_symbols,
             as_of=as_of,
             years=years_value,
+            valuation_basis=valuation_basis,
         )
 
     @dws.command("show", help="Show one built wide-table row.")
@@ -285,6 +296,14 @@ def _register_dws(app: typer.Typer) -> None:
             "--years",
             help=f"Fiscal-year window, newest year first (1-{MAX_FISCAL_YEARS}).",
         ),
+        valuation_basis: str | None = typer.Option(
+            None,
+            "--valuation-basis",
+            help=(
+                "Basis stored as the row's valuation.default_basis: snapshot|reference "
+                "(default: FC_METRICS_PROFILE, else snapshot)."
+            ),
+        ),
     ) -> None:
         options = from_context(ctx)
         try:
@@ -299,6 +318,7 @@ def _register_dws(app: typer.Typer) -> None:
             build_all=True,
             as_of=as_of,
             years=years_value,
+            valuation_basis=valuation_basis,
         )
 
 

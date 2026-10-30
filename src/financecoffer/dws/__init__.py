@@ -11,6 +11,7 @@ from financecoffer.dws.builder import (
     money,
     parse_as_of,
     rate,
+    resolve_default_basis,
     validate_fiscal_years,
     years_back,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "money",
     "parse_as_of",
     "rate",
+    "resolve_default_basis",
     "validate_fiscal_years",
     "years_back",
 ]
