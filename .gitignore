@@ -18,6 +18,17 @@ logs/
 # Internal QA process material — local only, never published
 qa_evidence/
 
+# Internal development records — local only, never published
+docs/decisions/
+docs/specs/db-schema.md
+docs/specs/naming.md
+docs/specs/packages.md
+docs/specs/reference-readme-comparison.md
+docs/specs/requirements-traceability.md
+docs/tasks/
+docs/reports/
+docs/multica-handover/
+
 # Scratch files agent/QA runs leave at the repo root — local only, never published
 /d_env.txt
 /issue.json
