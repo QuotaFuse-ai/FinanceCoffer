@@ -124,8 +124,9 @@ CREATE INDEX idx_fin_snapshot_symbol_date
 
 表：`dws.stock_agent_analysis_wide`（DDL 为补齐项，见 G-03）
 
-- 主键 `symbol`；`as_of` 标注计算时点；`metrics_json` 存过去 5 年逐年指标数组；`risk_summary`、`latest_announcements` 为预计算摘要。
+- 主键 `symbol`；`as_of` 标注计算时点；`metrics_json` 是 object，逐年指标放在其 `years` 数组内（DDL CHECK 要求 object）；`risk_summary`、`latest_announcements` 为预计算摘要。
 - 构建方式：`fcoffer dws build --symbol ...` / 定时全量重建；只读 DWD，不回写。
+- 字段映射、NULL 规则、幂等与对账方案见 `docs/specs/dws-metrics.md`；两者冲突时以该文为准。
 
 ### 4.4 向量检索层（PGVector）
 

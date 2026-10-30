@@ -7,6 +7,7 @@ from typing import Any, NoReturn
 
 import typer
 
+from financecoffer.cli.encoding import ensure_utf8_stdio
 from financecoffer.cli.options import GlobalOptions
 from financecoffer.core.envelope import Envelope, Meta
 from financecoffer.core.errors import FinanceCofferError
@@ -20,6 +21,7 @@ def emit_envelope(envelope: Envelope, *, quiet: bool = False) -> None:
     with the first real command in T-013; error envelopes stay JSON.
     """
 
+    ensure_utf8_stdio()
     stream = sys.stderr if quiet else sys.stdout
     typer.echo(envelope.model_dump_json(indent=2), file=stream)
 

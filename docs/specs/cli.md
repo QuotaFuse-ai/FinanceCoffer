@@ -1,6 +1,6 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.11（设计稿）
+版本：v0.12（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
 v0.3 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
@@ -12,6 +12,7 @@ v0.8 变更记录删除内部任务编号；§3.6 的 `ingest event` 说明改�
 v0.9 §3.3 写明 `serve api --workers N`（N>1）时的配置来源：fork 前把已解析配置导出为 `FC_*` 进程环境，worker 继承后与单 worker 一致；并记录凭据因此多出的落点。
 v0.10 §3.11 `archive run` 新增可重复的 `--symbol` / `--table` 作用域（与时间、字节窗口取交集）；`archive run` / `archive restore` 非 `--dry-run` 时必须显式 `--yes`，否则退出码 2 并给出候选行数；`--dry-run` 保证无副作用；注明 `archive prune` 尚未实现。
 v0.11 新增 §3.16 `minio` 命令组（`status|ensure|start|stop`）与 `FC_MINIO_AUTOSTART` 开关：默认 `false`，打开后 `serve api` 在 fork worker 前尽力确保本地存储可用，失败只告警不阻断；路径项无默认值、只在启动时报错；`start` 拒绝非回环端点。
+v0.12 新增 §1.1 输出编码约定：CLI 入口强制 stdout/stderr 为 UTF-8，修复 Windows 重定向下 `--output json` 落盘 GBK 的问题；§3.9 补充指向 `docs/specs/dws-metrics.md` 的口径交叉引用。
 
 ## 1. 全局参数
 
@@ -47,6 +48,18 @@ fcoffer [GLOBAL OPTIONS] COMMAND [ARGS]...
 | 6 | 鉴权失败 |
 | 8 | 批量部分失败 |
 | 130 | Ctrl-C 中断 |
+
+### 1.1 输出编码约定
+
+- **stdout 恒为 UTF-8**：CLI 入口在任何命令执行前把 `stdout` / `stderr` 重配为 UTF-8，与宿主代码页无关。
+  Windows 下重定向（`fcoffer … --output json > out.json`）默认拿到的是本机 ANSI/OEM 代码页（简体中文为 `cp936`/GBK）；
+  不重配则落盘字节不是 UTF-8，`jq` / Node / CI 一律解码失败——这是 `--output json` 在 Windows 管道场景失效的根因。
+- **诊断走 stderr**：进度、告警、日志只写 stderr，stdout 只承载数据（信封或表格），保证 `--output json` 可被直接管道消费。
+- **降级策略**：重配失败不阻断命令。`pythonw` 下 `sys.stdout is None`、被测试框架包装或自定义 writer 不支持 `reconfigure` 时，
+  跳过重配继续执行；编码错误用 `errors="replace"`，宁可丢一个字符，也不让整个信封因 `UnicodeEncodeError` 崩溃。
+  不使用 `backslashreplace`——它把中文转成 `\uXXXX` 转义序列，等于静默破坏可读输出。
+- `PYTHONIOENCODING` 仍可显式覆盖；本约定只保证"未显式指定时也是 UTF-8"。
+- 验证方式：把 `--output json` 的标准输出重定向到文件，文件内容必须能按 UTF-8 严格解码。
 
 ## 2. 命令树总表
 
@@ -226,6 +239,7 @@ fcoffer dws rebuild [--as-of YYYY-MM-DD] [--years N]
 - `risk_summary` 覆盖 `(as_of − 3 年, as_of]`；`latest_announcements` 最多 20 条，按 `ann_date DESC, id DESC`。
 - 合规开关关闭时 `compliance_tier` / `commercial_use` 保持 `NULL`；开启时同一 symbol 的 DWD 源行必须同档同商用标记，
   否则该 symbol 失败（不猜测、不取最严档）。
+- 口径全文（字段级映射、NULL/脏数据规则、幂等与对账 SQL）见 `docs/specs/dws-metrics.md`；本节与该文冲突时以该文为准。
 
 ### 3.10 向量
 

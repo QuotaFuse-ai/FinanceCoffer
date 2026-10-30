@@ -6,6 +6,7 @@ import typer
 
 from financecoffer import __version__
 from financecoffer.cli.commands import MODULES
+from financecoffer.cli.encoding import ensure_utf8_stdio
 from financecoffer.cli.options import DETAIL_TIERS, OUTPUT_FORMATS, GlobalOptions
 from financecoffer.cli.output import emit_envelope
 from financecoffer.core.envelope import Envelope
@@ -102,6 +103,7 @@ for _module in MODULES:
 def main() -> None:
     """Console-script entry point (``fcoffer``)."""
 
+    ensure_utf8_stdio()
     try:
         app(prog_name="fcoffer")
     except FinanceCofferError as exc:

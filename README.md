@@ -226,6 +226,7 @@ FinanceCoffer/
 - [CLI 命令清单](docs/specs/cli.md)
 - [包名与模块清单](docs/specs/packages.md)
 - [数据库结构](docs/specs/db-schema.md)
+- [DWS 指标口径与对账方案](docs/specs/dws-metrics.md)
 - [事件契约](docs/specs/event-contract.md)
 - [TickHub 侧改造方案](docs/specs/tickhub-integration.md)
 - [参考仓库 README 对比](docs/specs/reference-readme-comparison.md)
