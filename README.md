@@ -42,7 +42,7 @@
 - **安全检索**：无 `symbol` 直接 `E_INVALID_ARGUMENT`，`top_k` 上限 50，先过滤再走向量索引。
 - **冷热分离**：3 年以上或 >8KB 的公告正文转存对象存储，主表只留指针。
 
-> **状态**：v0.1（Alpha）。已可用 —— 数据库迁移（ODS / DWD / DWS / 向量 / Ops）、ODS 落库与重放、DWD 版本快照写入、DWS 宽表构建、查询服务、REST API、MCP 三个工具、向量表结构与本地 embedding、公告归档列与对象存储写入。正在补齐 —— ETL 消费者、向量写入 CLI、部署编排。命令实现状态以 [`docs/specs/cli.md`](docs/specs/cli.md) 为准。
+> **状态**：v0.1（Alpha）。已可用 —— 数据库迁移（ODS / DWD / DWS / 向量 / Ops）、ODS 落库与重放、DWD 版本快照写入、DWS 宽表构建、查询服务、REST API、MCP 三个工具、向量表结构、本地 embedding 与向量写入 CLI、公告归档列与对象存储写入、ETL 消费者（`fcoffer etl consume`）。部署入口为 `fcoffer start-all`（API 与 ETL 消费者同进程监管）。命令实现状态以 [`docs/specs/cli.md`](docs/specs/cli.md) 为准。
 
 ## 1. 定位与边界
 
