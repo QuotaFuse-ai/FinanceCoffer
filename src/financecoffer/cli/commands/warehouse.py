@@ -69,9 +69,7 @@ def _register_dwd(app: typer.Typer) -> None:
         options = from_context(ctx)
         try:
             version_value = (
-                None
-                if version is None
-                else parse_int_option(version, field="version", minimum=1)
+                None if version is None else parse_int_option(version, field="version", minimum=1)
             )
         except FinanceCofferError as exc:
             emit_failure(options, exc)

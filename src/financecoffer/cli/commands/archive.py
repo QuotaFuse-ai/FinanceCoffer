@@ -138,9 +138,7 @@ def register(app: typer.Typer) -> None:
             )
             min_bytes_value = parse_int_option(min_bytes, field="min_bytes", minimum=1)
             limit_value = (
-                None
-                if limit is None
-                else parse_int_option(limit, field="limit", minimum=1)
+                None if limit is None else parse_int_option(limit, field="limit", minimum=1)
             )
         except FinanceCofferError as exc:
             emit_failure(options, exc)
@@ -245,9 +243,7 @@ def register(app: typer.Typer) -> None:
     ) -> None:
         options = from_context(ctx)
         try:
-            sample_value = parse_int_option(
-                sample, field="sample", minimum=1, maximum=MAX_SAMPLE
-            )
+            sample_value = parse_int_option(sample, field="sample", minimum=1, maximum=MAX_SAMPLE)
         except FinanceCofferError as exc:
             emit_failure(options, exc)
         payload = _run_archive(options, lambda service: service.verify(sample=sample_value))

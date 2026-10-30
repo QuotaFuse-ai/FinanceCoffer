@@ -70,9 +70,7 @@ def register(app: typer.Typer) -> None:
         month: str | None = typer.Option(
             None, "--month", help="First month as YYYY-MM (default: current month)."
         ),
-        ahead: str = typer.Option(
-            "3", "--ahead", help="How many extra months to add (>= 0)."
-        ),
+        ahead: str = typer.Option("3", "--ahead", help="How many extra months to add (>= 0)."),
     ) -> None:
         options = from_context(ctx)
         try:

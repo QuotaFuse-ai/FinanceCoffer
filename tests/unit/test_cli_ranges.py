@@ -125,9 +125,9 @@ def test_in_range_boundary_is_not_rejected_by_the_guard(argv: list[str], field: 
         payload = json.loads(result.stdout)
         error = payload.get("error") or {}
         details = error.get("details") or {}
-        assert not (
-            error.get("code") == "E_INVALID_ARGUMENT" and details.get("field") == field
-        ), f"boundary value rejected for {field}: {error}"
+        assert not (error.get("code") == "E_INVALID_ARGUMENT" and details.get("field") == field), (
+            f"boundary value rejected for {field}: {error}"
+        )
 
 
 def test_envelope_shape_under_explicit_json_output() -> None:
@@ -154,17 +154,12 @@ def test_parse_int_option_boundaries(
 ) -> None:
     for value in accepted:
         assert (
-            parse_int_option(
-                str(value), field="limit", minimum=minimum, maximum=maximum
-            )
-            == value
+            parse_int_option(str(value), field="limit", minimum=minimum, maximum=maximum) == value
         )
 
 
 @pytest.mark.parametrize(("raw", "minimum", "maximum"), [("abc", 1, 10), ("1.5", 0, None)])
-def test_parse_int_option_rejects_non_integers(
-    raw: str, minimum: int, maximum: int | None
-) -> None:
+def test_parse_int_option_rejects_non_integers(raw: str, minimum: int, maximum: int | None) -> None:
     with pytest.raises(InvalidArgumentError) as info:
         parse_int_option(raw, field="limit", minimum=minimum, maximum=maximum)
 
