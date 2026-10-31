@@ -18,7 +18,7 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from subprocess import Popen
@@ -31,7 +31,7 @@ from financecoffer.cli.commands.monitor import HEALTH_CHECKS, health_probes
 from financecoffer.cli.options import from_context
 from financecoffer.cli.output import emit_failure
 from financecoffer.cli.placeholder import add_group
-from financecoffer.config.loader import env_var_name, load_cli_config
+from financecoffer.config.loader import env_var_name, load_cli_config, load_cli_config_detailed
 from financecoffer.core.config import Config
 from financecoffer.core.errors import (
     ConfigError,
@@ -41,6 +41,7 @@ from financecoffer.core.errors import (
 )
 from financecoffer.core.logging import get_logger
 from financecoffer.core.redaction import redact_text
+from financecoffer.core.secrets import CREDENTIAL_FIELDS
 from financecoffer.db.connection import connect, resolve_cli_dsn
 from financecoffer.ops import minio_process
 
@@ -351,26 +352,40 @@ def _serve_all(
         )
 
 
-def _config_environment(config: Config) -> dict[str, str]:
+def _config_environment(config: Config, sources: Mapping[str, str]) -> dict[str, str]:
     """Render a resolved :class:`Config` back into canonical ``FC_*`` values.
 
     ``uvicorn`` can only spread ``workers > 1`` from an import string, so every
     worker re-runs ``create_app()`` -- and that default is ``load_config()``,
     which reads the process environment only and never the repo ``.env``. The
     fix is therefore to publish what this process has *already* resolved: the
-    worker rebuilds the exact configuration the CLI
-    resolved, instead of re-discovering it in a context that cannot see
-    ``.env``. ``--env-file`` behaviour, ``--db-url`` precedence and defaults
-    then agree between ``--workers 1`` and ``--workers N`` by construction.
+    worker rebuilds the exact configuration the CLI resolved, instead of
+    re-discovering it in a context that cannot see ``.env``. ``--env-file``
+    behaviour, ``--db-url`` precedence and defaults then agree between
+    ``--workers 1`` and ``--workers N`` by construction.
+
+    ``sources`` is what makes that publish safe (QUOT-195): a credential field is
+    exported **as the operator wrote it**, so a ``keyring:`` / ``file:`` /
+    ``env:`` reference crosses the fork as a plain string and the plaintext is
+    resolved independently in each worker. The secret never enters this
+    process's environment, so it cannot be read out of the workers' environment
+    block, ``/proc/<pid>/environ`` or a crash dump. A credential configured as a
+    literal stays a literal -- this function cannot invent a reference it was
+    never given, which is why the docs push references for anything that has to
+    survive a fork.
 
     Empty or unset values stay unset (an empty ``FC_*`` already means "unset"
-    to the loader). ``SecretStr`` fields are deliberately unwrapped: the child
-    validates the same credential the parent did. See the trade-off note in
-    :func:`_export_config_environment`.
+    to the loader). Every :class:`Config` secret is one of the five credential
+    fields, so no other field carries a value worth protecting here.
     """
 
     exported: dict[str, str] = {}
     for name in Config.model_fields:
+        if name in CREDENTIAL_FIELDS:
+            raw = sources.get(name)
+            if raw is not None and raw.strip():
+                exported[env_var_name(name)] = raw.strip()
+            continue
         value = getattr(config, name)
         if value is None:
             continue
@@ -383,30 +398,26 @@ def _config_environment(config: Config) -> dict[str, str]:
     return exported
 
 
-def _export_config_environment(config: Config) -> tuple[str, ...]:
+def _export_config_environment(config: Config, sources: Mapping[str, str]) -> tuple[str, ...]:
     """Publish the resolved configuration to this process, return the names.
 
-    The forked workers inherit both the rest of our environment and these
-    values, which is deliberate and is the trade-off accepted for the import
-    string:
+    The forked workers inherit both the rest of our environment and these values.
+    Credentials are published as the reference the operator wrote (see
+    :func:`_config_environment`), so a deployment on references keeps its
+    secrets out of every process it forks; ``config show``, ``config check``, the
+    logs and ``/health`` keep masking them either way.
 
-    * the DSN (password included), the MinIO keys and the MCP token get one more
-      landing spot -- the environment of the workers this CLI itself forks. That
-      is the same credential the parent already holds in memory and the same
-      exposure ``--db-url`` had before this fix; it is not a new *log* or
-      *output* leak, and ``config show`` / ``config check`` keep masking it.
-    * the alternative -- letting ``create_app()`` fall back to repo ``.env``
-      discovery -- would make a library helper depend on the working directory
-      of an imported module and would silently change the meaning of
-      ``create_app()`` for every caller, tests included. Exporting is explicit,
-      scoped to the multi-worker branch, and leaves the single-worker path
-      untouched.
+    The alternative -- letting ``create_app()`` fall back to repo ``.env``
+    discovery -- would make a library helper depend on the working directory of an
+    imported module and would silently change the meaning of ``create_app()`` for
+    every caller, tests included. Exporting is explicit, scoped to the
+    multi-worker branch, and leaves the single-worker path untouched.
 
-    Only variable *names* are returned, so a caller can report what was
-    inherited without putting a value into a log line.
+    Only variable *names* are returned, so a caller can report what was inherited
+    without putting a value into a log line.
     """
 
-    exported = _config_environment(config)
+    exported = _config_environment(config, sources)
     os.environ.update(exported)
     return tuple(sorted(exported))
 
@@ -457,9 +468,10 @@ def register(app: typer.Typer) -> None:
         options = from_context(ctx)
         _reject_non_loopback(options, host)
         try:
-            config = load_cli_config(db_url=options.db_url)
+            resolved = load_cli_config_detailed(db_url=options.db_url)
         except FinanceCofferError as exc:
             emit_failure(options, exc)
+        config = resolved.config
 
         # Before the server (and any forked worker) starts, so a cold boot with
         # the switch on does not race the first archive call.
@@ -484,8 +496,10 @@ def register(app: typer.Typer) -> None:
             # re-runs ``create_app()`` and resolves configuration from the
             # process environment alone. Publish the configuration this process
             # already resolved (including the repo ``.env`` and ``--db-url``)
-            # so a worker sees exactly what the single-worker path gets.
-            exported = _export_config_environment(config)
+            # so a worker sees exactly what the single-worker path gets --
+            # credentials as the operator wrote them, which for a reference means
+            # the child resolves it and never receives the secret.
+            exported = _export_config_environment(config, resolved.sources)
             _log.debug(
                 "serve api: published %d configuration variables to %d workers: %s",
                 len(exported),
