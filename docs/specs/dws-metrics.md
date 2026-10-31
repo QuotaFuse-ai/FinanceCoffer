@@ -2,8 +2,8 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 版本 | v1.1.3（双口径估值 + 事件字段单位增补 + DWS 市场闸 + §4.4.6/§4.4.7 文档收口） |
-| 日期 | 2026-10-27（口径原文）/ 2026-10-30（迁入 `docs/specs/`）/ 2026-10-30（增补 `reference` 口径）/ 2026-10-31（§4.1 金额单位定稿与市场闸）/ 2026-10-31（§4.4.6 MCP 描述对齐、§4.4.7 合并、补 v1.1 变更行） |
+| 版本 | v1.2.0（双口径估值 + 事件字段单位增补 + DWS 市场闸 + §4.4.6/§4.4.7 文档收口 + §4.4.8 报价质量标注） |
+| 日期 | 2026-10-27（口径原文）/ 2026-10-30（迁入 `docs/specs/`）/ 2026-10-30（增补 `reference` 口径）/ 2026-10-31（§4.1 金额单位定稿与市场闸）/ 2026-10-31（§4.4.6 MCP 描述对齐、§4.4.7 合并、补 v1.1 变更行）/ 2026-11-01（§4.4.8 `price_quality` 落地，`source_version` 升 `dws-2`） |
 | 状态 | 口径已定稿；§8 的 12 项**待人类确认** |
 | 依据 | `docs/specs/financecoffer.md` §4.3／§5、`docs/specs/db-schema.md`、`docs/specs/event-contract.md`、`docs/specs/cli.md`、`src/financecoffer/db/migrations/0005_dws.sql`、`src/financecoffer/db/models/dws.py`、`src/financecoffer/query/service.py` |
 | 产出物性质 | **文档 + SQL 草案**。不含生产代码，不改 `src/`，不建库、不跑数据。 |
@@ -112,7 +112,7 @@
 | `risk_summary` | `dwd.stock_risk_event` | `occur_date`、`risk_type`、`severity`、`summary`、`event_id`、`source_announcement_ref`、`quality_status` | 窗口 `(as_of-3年, as_of]`；`severity` 四级统计、high/critical 进摘要；结构见 §3.3 | 窗口内无事件 → `counts` 全 0、`highlights=[]`、`highest_severity=null` |
 | `latest_announcements` | `dwd.stock_announcement` | `id`、`ann_date`、`ann_type`、`title`、`minio_url`、`quality_status`、`confidence` | `ann_date <= as_of`；`ORDER BY ann_date DESC, id DESC LIMIT 20`；结构见 §3.4 | 无公告 → `[]`（不写 `null`） |
 | `fiscal_years` | CLI 参数 `--years` | — | 默认 5，取值 1–10，落库前校验 | 非法值拒绝 |
-| `source_version` | 本文口径版本 | — | 常量 `"dws-1"`；口径变更时递增（§6.4） | 可为 `NULL`，但本方案恒写 |
+| `source_version` | 本文口径版本 | — | 常量 `"dws-2"`（v1.1 为 `dws-1`）；口径变更时递增（§6.4） | 可为 `NULL`，但本方案恒写 |
 | `built_at` | — | — | 落库时刻，由 DB `now()` 或应用时间写入；**不参与确定性比较** | NOT NULL |
 | `compliance_tier` | 参与构建的所有 DWD 行的 `compliance_tier` | — | 仅 `FC_COMPLIANCE_ENABLED=true` 时写；所有来源行一致则透传，不一致则构建失败（fail-closed），不做跨等级合并（Q-12） | 开关关闭恒 `NULL` |
 | `commercial_use` | 同上 | — | 同上 | 开关关闭恒 `NULL` |
@@ -169,6 +169,14 @@
     "as_of": "2026-10-27",
     "price_date": null,
     "price_close": null,
+    "price_quality": {
+      "level": "missing",
+      "reason": "no_price",
+      "age_days": null,
+      "quote_quality_status": null,
+      "quote_confidence": null,
+      "note": "无可用报价，估值按缺失处理。"
+    },
     "default_basis": "snapshot",
     "pe_source": null,
     "pe": null,
@@ -214,6 +222,7 @@
 - **金额一律字符串**（`"123456789.0000"`），沿用 `event-contract.md` §3.2"金额以字符串传输，避免 JSON float 精度丢失"。JSONB 中不做 float 往返。
 - **比率一律 JSON 数字**，4 位小数：ROE 用小数（`0.0831` = 8.31%），PE/PB 用倍数。
 - `valuation.bases` **必填**：至少含 `snapshot`，通常也含 `reference`；`valuation.default_basis` 必须指向其中一个。顶层 `pe` / `pe_source` / `pe_reason` / `pb` / `pb_reason` 是 `default_basis` 的**镜像**，只供旧读取方兼容；两者冲突时以 `bases[default_basis]` 为准。
+- `valuation.price_quality` **必填**（v1.2 起）：两套口径共用的一份报价质量标注（§4.4.8），只描述**输入**——这份报价新不新、上游怎么标——不参与任何数值计算，因此不放进 `bases.<name>` 各自重复。
 - `reference` 口径的 `pe_cross` 是厂商 `pe_ttm` 的对照值，**不参与** `pe` 的计算；`quarter_basis` 固定为 `single_quarter_deducted_x4`，是口径版本标记。
 - 年份记录内除 `year` 外的 5 个指标键名必须与 `STRUCTURED_METRICS` 完全一致（`revenue` / `net_profit` / `roe` / `pe` / `pb`），否则 `structured()` 读不到（`_year_record` 只拷贝这 5 个键 + `year`）。
 - `roe_reason` / `pe_reason` / `pb_reason` 是补充键：仅当对应指标为 `null` 时给出原因码（`equity_unavailable` / `no_price` / `no_earnings` / `non_positive_earnings` / `out_of_range` / `no_equity`），有值时写 `null`。读取层不消费，供消费方与排查使用；`data_status="missing"` 的年份三者均为 `null`。
@@ -429,6 +438,111 @@ roe_reference  = null + "equity_unavailable"
 
 `default_basis` 保持 `snapshot`。需要改默认口径（或让客户侧固定选择）时，触发条件沿用 §4.4.3 的第 1–3 条，并同步修订本节与 §3.2 的示例；客户侧也可以不全局改默认，只在调用时传 `reference`。
 
+#### 4.4.8 报价质量标注 `price_quality`
+
+**动机**：估值取的是「`trade_date <= as_of` 的最新一条报价」（§4.4.4）。停牌或数据源延迟时，这条报价可能是几十天前的，而 `snapshot` / `reference` 两条路径都会照常用它算出 PE。`dwd.stock_quote_snapshot.quality_status` 一直是上游给的列（`src/financecoffer/db/models/dwd.py`），本层此前不读它，消费方只看到 `price_date` / `price_close`，无法判断这份报价能不能代表"当前"。
+
+**结论**：**保留数值 + 标注**，不置空、不降级。停牌前的过程价仍然"有效"，问题只在"时效性"；把 PE 删掉会让消费方失去锚点，也与 §5.1「`bad` 不丢弃、只打标」直接冲突。
+
+##### 数据结构
+
+`metrics_json.valuation` 新增**共享**对象 `price_quality`，与 `price_date` / `price_close` 同级，**两套口径共用同一份**（不放进每个 `bases.<name>`）——质量描述的是**输入**，两套口径读的是同一行报价。
+
+```json
+"price_quality": {
+  "level": "stale",
+  "reason": "stale_quote",
+  "age_days": 48,
+  "quote_quality_status": "normal",
+  "quote_confidence": "high",
+  "note": "最近报价 2026-09-09，距数据截止 2026-10-27 已 48 天，未取得更新报价。"
+}
+```
+
+| 字段 | 类型 | 规则 |
+| --- | --- | --- |
+| `level` | enum | 构建侧：`ok` \| `suspicious` \| `stale` \| `bad` \| `missing`；读取侧对旧行另加 `unknown`（见「读取层」） |
+| `reason` | string \| null | `null`（仅 `ok`）/ `no_price` / `quote_quality_bad` / `stale_quote` / `quote_quality_suspicious` / `not_built`（旧行） |
+| `age_days` | int \| null | `(as_of - price_date).days`，**日历日**；`level="missing"` 时为 `null` |
+| `quote_quality_status` | string \| null | 原样透传 `normal` / `suspicious` / `bad`；无报价行时 `null` |
+| `quote_confidence` | string \| null | 原样透传 `high` / `medium` / `low`；无报价行时 `null` |
+| `note` | string \| null | 固定模板的事实陈述（见下），不推断原因 |
+
+##### 判定规则
+
+按以下**优先级从高到低**判定，命中即停：
+
+1. 报价行不存在，或 `close` 与 `total_market_cap` 均为 `NULL` → `level="missing"`、`reason="no_price"`、`age_days=null`；
+2. `quality_status == "bad"` → `level="bad"`、`reason="quote_quality_bad"`；
+3. `age_days > PRICE_STALE_DAYS` → `level="stale"`、`reason="stale_quote"`；
+4. `quality_status == "suspicious"` → `level="suspicious"`、`reason="quote_quality_suspicious"`；
+5. 其余 → `level="ok"`、`reason=null`。
+
+阈值 **`PRICE_STALE_DAYS = 10`（日历日，边界为「大于」，第 10 天仍算新鲜）**：正常个股任一自然日距最近报价不超过 4 天（周末 + 单日休市），A 股最长连续休市约 9 天，10 天既避免把正常休市误判成陈旧，又能覆盖一周以上的停牌。**不使用交易日历**——避免引入节假日表依赖，保持只由 `as_of` 驱动的确定性。调整阈值属于口径变更，须同步升 `source_version` 并修订本节。
+
+##### 两套口径同规则 · 是否进入数值
+
+**同一份报价、同一套阈值、同一个 `price_quality` 块**，两套口径不因 basis 各算一套。差异只在「这份报价是否真的进入了数值」，由已有的 `pe_source` 区分：
+
+| 指标 | 是否由该报价计算 | `level != "ok"` 时的准确含义 |
+| --- | --- | --- |
+| `reference.pe` | **是**（`total_market_cap / (单季扣非 × 4)`） | 数值基于该报价，展示时必须带标注 |
+| `snapshot.pe`，`pe_source="quote.pe_ttm"` | 否（厂商透传） | 数值不是本层用该报价算的；但厂商值本身也可能停在同一日期 |
+| `snapshot.pe`，`pe_source="market_cap/net_profit"` | **是** | 同 `reference.pe` |
+| `reference.pb`（`pb_mrq`） | 否（厂商透传） | 同 `pe_ttm` |
+| `snapshot.pb` | 恒 `null`（`no_equity`） | 不适用 |
+
+##### 不降级（铁律 2 / §5.1）
+
+- `level != "ok"` **不得**把 `pe` / `pb` 置 `null`，也不得改写 `pe_reason` / `pb_reason`。`pe_reason` 只回答「为什么没有数」，报价质量是另一个维度。
+- `level="missing"` 时 `pe` / `pb` 仍由现有的 `no_price` / `no_vendor_pb` 规则置空，**不是**本标注触发的。
+- 本标注只作用于 `metrics_json.valuation`。`years[].pe` 继续按 §4.4.4 的 366 天（`PRICE_GAP_DAYS`）报价-报告期间隔规则判定，语义不同（历史年份的价格匹配），不受影响。
+- 确定性：只依赖 `as_of` 与报价自身的 `trade_date` / `quality_status` / `confidence`，**禁止 `now()`**；同一输入 + 同一 `as_of` 产出字节相同的 JSON。
+- 构建自检（§6.5）拒绝：`level` 不在集合内、非 `ok` 却无 `reason`、`age_days` 为负、`missing` 却带 `age_days`。
+
+##### `note` 文案模板（固定、事实陈述）
+
+| `level` | `note` |
+| --- | --- |
+| `ok` | `null` |
+| `missing` | `无可用报价，估值按缺失处理。` |
+| `stale` | `最近报价 {price_date}，距数据截止 {as_of} 已 {age_days} 天，未取得更新报价。` |
+| `suspicious` | `上游将 {price_date} 的报价标记为可疑{（confidence={quote_confidence}）}。` |
+| `bad` | `上游将 {price_date} 的报价标记为异常{（confidence={quote_confidence}）}。` |
+
+不出现「停牌」「僵尸」这类推断措辞——本层无法区分停牌、长期无成交与数据源延迟。`quote_confidence` 为 `null` 时省略括号部分（不输出 `confidence=None`）。
+
+##### 读取层
+
+`_select_valuation()` 把 `valuation.price_quality` **原样透传**，与 `price_date` / `price_close` 同级；无论请求哪个 `valuation_basis`，返回的都是同一个块。CLI / REST / MCP 三处**不新增任何参数**，随 `data.valuation` 一起回显。
+
+本版本之前构建的宽表行没有这个键：读取时**不重算**（重算要引入 `now()`，等于把口径搬进查询路径），返回
+
+```json
+{"level": "unknown", "reason": "not_built", "age_days": null,
+ "quote_quality_status": null, "quote_confidence": null,
+ "note": "该行构建时未记录报价质量，报价是否新鲜无法判断。"}
+```
+
+`unknown` 的语义是**未知**，消费方不得当成 `ok`；下一次 `dws build` 即补齐。既有字段一个都不改，不报错。
+
+##### 版本
+
+- `METRICS_SCHEMA` 保持 `dws.metrics.v1`（只新增键，旧读取方忽略未知键）。
+- `SOURCE_VERSION` 由 `dws-1` 升为 **`dws-2`**（§4.9：新增规则即递增）。**数值零变化**：除新增键与来源标记外，`metrics_json` 的任何值都不变。
+
+##### 已知限制（必须写明）
+
+1. **「每日照发同价零成交」的报价，本层识别不了。** `dwd.stock_quote_snapshot` 只有 `close` / `total_market_cap` / `pe_ttm` / `pb_mrq`，没有成交量、成交额与交易状态，`quality_status` 是上游给的。若上游对停牌日仍每天发一条 `normal` 的同价记录，这里 `age_days=0`、`level="ok"`。闭环只能在上游：报价流（TickHub）在停牌 / 零成交 / 报价陈旧时把 `quality_status` 标成 `suspicious` / `bad`，本标注自动生效，FC 无需改动。备选方案（本层跨表读 `dwd.stock_kline.amount/volume` 做「连续几日零成交才算僵尸」的二次判定）会引入新的跨表依赖与一套新阈值，**本版不做**。
+2. **`reference` 没有 366 天价格护栏**：`_pe_for_year()` 有 `PRICE_GAP_DAYS` 检查，`_reference_valuation()` 没有。本节不改公式，只把这份风险暴露在 `price_quality` 里；是否给 `reference` 补同类护栏（会改变少量历史样本的数值）另行决策。
+3. **`quality_status` 的语义以 `docs/specs/event-contract.md` 为准**：它是上游对报价事件的标记，不等于「停牌」。所以 `level` 用 `bad` / `suspicious` 命名，不用「停牌」。
+
+##### 消费方契约
+
+前端：`ok` 不加标记；`suspicious` / `stale` 黄色标记、`bad` 红色标记，tooltip 直接用 `note`；`missing` 按现有缺失态展示；`unknown` 不展示标记（视为未知，不冒充正常）。标记加在 PE/PB 数值旁，`snapshot` 且 `pe_source="quote.pe_ttm"` 时应说明是厂商透传值，避免被理解成本层用旧价算的。
+
+AI / MCP：引用 `valuation.pe` / `valuation.pb` 前必须先看 `price_quality.level`；为 `stale` / `suspicious` / `bad` 时必须写明报价日期与质量提示，不得表述为「当前估值」；为 `missing` 或 `unknown` 时不得自行估算或用另一套口径顶替。
+
 ### 4.5 PB
 
 **公式**：`PB = 总市值 / 归母净资产`；`reference` 口径另有**透传路径**。
@@ -472,7 +586,7 @@ roe_reference  = null + "equity_unavailable"
 | 列 | 语义 | 取值 |
 | --- | --- | --- |
 | `as_of` | **数据截止时点**（口径时间） | 构建日 UTC 00:00，或 `--as-of` 指定；决定"哪些 DWD 行参与" |
-| `source_version` | **口径版本**（代码 + 规则） | `"dws-1"`；§4/§5 任一条规则变更时递增为 `dws-2`……与 `built_at` 正交 |
+| `source_version` | **口径版本**（代码 + 规则） | 当前 `"dws-2"`（v1.1 起 `"dws-1"`，v1.2 的 `price_quality` 标注递增，§4.4.8）；§4/§5 任一条规则变更时递增为 `dws-3`……与 `built_at` 正交 |
 | `built_at` | **物理构建时刻**（审计） | 实际落库时间；两次重建即使内容相同也会变 |
 
 三者必须分开：只用 `built_at` 无法解释"为什么数值变了"（可能只是重跑），只用 `as_of` 又无法区分口径升级。
@@ -492,6 +606,7 @@ roe_reference  = null + "equity_unavailable"
 
 - **不因为 `bad` 把整年指标置 `null`**——那等于本层做了"是否可信"的二次判断，违反铁律 2。
 - `confidence` 原样透传（`high` / `medium` / `low` / `NULL`），不做换算。
+- 同一条规则适用于**报价**：`quality_status` 为 `bad` / `suspicious` 的报价照常进入 PE/PB，只在 `valuation.price_quality` 里标注，不置空、不改原因码（§4.4.8）。
 
 ### 5.2 缺失年份
 
@@ -582,7 +697,8 @@ roe_reference  = null + "equity_unavailable"
 4. 无 float 泄漏（金额全为字符串）；
 5. `risk_summary.counts.total` = 四级之和；
 6. `latest_announcements` 已按 `ann_date DESC, id DESC` 且长度 ≤ 20；
-7. 合规开关关闭时两列值为 `NULL`。
+7. 合规开关关闭时两列值为 `NULL`；
+8. `valuation.price_quality` 存在，`level` 在 `ok`/`suspicious`/`stale`/`bad`/`missing` 之内，非 `ok` 必带 `reason`，`age_days` 非负且 `missing` 时为 `NULL`（§4.4.8）。
 
 ---
 
@@ -898,6 +1014,7 @@ WHERE w.symbol = :'symbol';
 - [ ] 逐年带 `report_date` / `report_type` / `version` 溯源字段；
 - [ ] 缺失年份是显式 `null` + `data_status="missing"`，没有补 0 / 插值；
 - [ ] `quality_status='bad'` 的年份照常写入并打标；
+- [ ] `valuation.price_quality` 与数值同时写出，且 `level != "ok"` 时 `pe` / `pb` / `pe_reason` / `pb_reason` 与该报价被标为 `normal` 时逐字节一致（§4.4.8 不降级）；
 - [ ] `pe` 永不为负；无价无盈利时为 `null` 且有 `pe_reason`；
 - [ ] `risk_summary.counts.total` = 四级之和，`highlights` ≤ 10 条且只含 high/critical；
 - [ ] `latest_announcements` ≤ 20 条，`ann_date DESC, id DESC`，字段白名单；
@@ -920,3 +1037,4 @@ WHERE w.symbol = :'symbol';
 | 2026-10-30 | v1.1.1 | §4.1.1 合入上游 `UNIT-AUDIT.md` §9 草案：`total_market_cap` 为基本货币单位且消费端不再换算、`pb_mrq` 仅 `>0`、`amount_net_profit_deducted` 不得用归母顶替、`biz_key` 代次标记 `\|g2`、无币种列的已知限制与精度要求 |
 | 2026-10-31 | v1.1.2 | 定稿（上游 `UNIT-AUDIT.md` §9.4 / §9.5）：§4.1「金额单位」行写明**口径只适用 A 股**、US/HK 缺币种列时 `reference`/`snapshot` 一律 `null` + 原因码；§4.1.1 补 DWS 市场闸（`_build_one` 只接受 6 位数字 symbol，非 A 股进 `BuildReport.skipped` + `non_a_share_symbol`）与遗留宽表行的 `dws show` 表态规则。不改表、不改公式、不加 `currency`/`market` 列 |
 | 2026-10-31 | v1.1.3 | 文档收口，不改口径：合并重复的 §4.4.7 标题为「默认口径的切换」；§4.4.6 的 MCP 行改为描述**实际下发**的 frame schema（无 enum）与运行时的 `valuation_basis` 校验（`E_INVALID_ARGUMENT`、`details.field="valuation_basis"`）；§10 补记缺失的 v1.1 行 |
+| 2026-11-01 | v1.2.0 | 新增 §4.4.8「报价质量标注 `price_quality`」并落地：`metrics_json.valuation` 增加**两套口径共享**的 `price_quality`（`level`/`reason`/`age_days`/`quote_quality_status`/`quote_confidence`/`note`），判定输入为 `dwd.stock_quote_snapshot.quality_status` + `as_of - price_date` 与 `PRICE_STALE_DAYS = 10` 日历日；**纯新增、数值零变化**，不因质量标记把 PE/PB 置空或改写 `pe_reason`；读取层原样透传，早于此版本的行报 `level="unknown"` 而不重算；`source_version` 升 `dws-2`（`schema` 仍 `dws.metrics.v1`）。同步 §3.1/§3.2/§4.9/§5.1/§6.5/§9。已知限制（同价零成交的报价本层无法识别，需上游在停牌/零成交时标 `suspicious`/`bad`）写入 §4.4.8 |

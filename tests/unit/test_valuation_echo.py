@@ -9,7 +9,10 @@ through the real :class:`QueryService` so REST and MCP are proven to agree:
 * asking for a basis the row never built reports ``basis_not_built`` and does
   not fall back to the other basis' numbers;
 * a legacy row with no ``bases``/``default_basis`` folds into ``snapshot`` and
-  still answers.
+  still answers;
+* ``price_quality`` is echoed untouched and is shared by both bases, and a row
+  built without it reports ``level="unknown"`` instead of posing as a clean
+  quote (QUOT-257).
 """
 
 from __future__ import annotations
@@ -140,8 +143,16 @@ def _two_basis_metrics(default_basis: str) -> dict[str, Any]:
         "years": [{"year": 2025, "revenue": "1.0000"}],
         "valuation": {
             "as_of": "2026-09-30",
-            "price_date": "2026-09-30",
+            "price_date": "2026-09-26",
             "price_close": "10.0000",
+            "price_quality": {
+                "level": "ok",
+                "reason": None,
+                "age_days": 4,
+                "quote_quality_status": "normal",
+                "quote_confidence": "high",
+                "note": None,
+            },
             "default_basis": default_basis,
             "pe_source": mirror["pe_source"],
             "pe": mirror["pe"],
@@ -227,3 +238,74 @@ def test_legacy_row_without_a_basis_map_folds_into_snapshot() -> None:
     ):
         assert valuation["pe"] is None
         assert valuation["pe_reason"] == "basis_not_built"
+
+
+# -- price_quality echo (QUOT-257) ------------------------------------------
+
+
+def test_both_surfaces_echo_the_stored_price_quality_unchanged() -> None:
+    stored = _two_basis_metrics("snapshot")["valuation"]["price_quality"]
+    service = _service(_two_basis_metrics("snapshot"))
+
+    for valuation in (_rest_valuation(service), _mcp_valuation(service)):
+        assert valuation["price_quality"] == stored
+    assert _rest_valuation(service) == _mcp_valuation(service)
+
+
+def test_price_quality_is_shared_by_both_bases_not_rewritten_per_basis() -> None:
+    """One quote, one block: switching basis moves PE/PB, never the flag."""
+
+    metrics = _two_basis_metrics("snapshot")
+    metrics["valuation"]["price_quality"] = {
+        "level": "stale",
+        "reason": "stale_quote",
+        "age_days": 48,
+        "quote_quality_status": "normal",
+        "quote_confidence": "high",
+        "note": "最近报价 2026-09-26，距数据截止 2026-11-13 已 48 天，未取得更新报价。",
+    }
+    service = _service(metrics)
+
+    fresh = _rest_valuation(service, valuation_basis="snapshot")
+    reference = _rest_valuation(service, valuation_basis="reference")
+    assert fresh["pe"] == 15.0
+    assert reference["pe"] == 10.0
+    assert (
+        fresh["price_quality"]
+        == reference["price_quality"]
+        == metrics["valuation"]["price_quality"]
+    )
+
+    via_mcp = _mcp_valuation(service, valuation_basis="reference")
+    assert via_mcp["price_quality"] == reference["price_quality"]
+
+
+def test_row_built_without_price_quality_answers_unknown_not_ok() -> None:
+    """A pre-dws-2 row stays readable and must not pose as a clean quote."""
+
+    metrics = _two_basis_metrics("snapshot")
+    legacy = json.loads(json.dumps(metrics))
+    del legacy["valuation"]["price_quality"]
+    service = _service(legacy)
+
+    for valuation in (_rest_valuation(service), _mcp_valuation(service)):
+        assert valuation["price_quality"]["level"] == "unknown"
+        assert valuation["price_quality"]["age_days"] is None
+        assert valuation["price_quality"]["quote_quality_status"] is None
+        # Every other key keeps the value the pre-change reader produced: the
+        # new field is the only difference in the echo.
+        assert {key: value for key, value in valuation.items() if key != "price_quality"} == {
+            "pe": 15.0,
+            "pe_source": "quote.pe_ttm",
+            "pe_reason": None,
+            "pb": None,
+            "pb_reason": "no_equity",
+            "roe": None,
+            "roe_reason": "equity_unavailable",
+            "basis": "snapshot",
+            "default_basis": "snapshot",
+            "available_bases": ["snapshot", "reference"],
+            "as_of": "2026-09-30",
+            "price_date": "2026-09-26",
+            "price_close": "10.0000",
+        }

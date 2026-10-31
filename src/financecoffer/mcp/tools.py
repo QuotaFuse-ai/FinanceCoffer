@@ -28,7 +28,10 @@ TOOL_SPECS: tuple[dict[str, Any], ...] = (
         "name": "query_structured_data",
         "description": (
             "Read DWS structured metrics for one symbol, optionally projected to a "
-            "single metric and a fiscal-year window. Returns the FinanceCoffer envelope."
+            "single metric and a fiscal-year window. Returns the FinanceCoffer envelope. "
+            "Check valuation.price_quality.level before quoting PE/PB: any value other "
+            "than \"ok\" (including \"unknown\" on rows built before the field existed) "
+            "is a caveat on the quote that valuation is priced from."
         ),
         "inputSchema": {
             "type": "object",

@@ -6,7 +6,8 @@ symbol from DWD facts under these rules:
 * store don't compute: amounts move as :class:`~decimal.Decimal` and are written
   as fixed-point strings; nothing is annualized, reconciled or adjusted;
 * upstream quality is never re-validated: a ``bad`` year still lands and is only
-  flagged in ``metrics_json.quality``;
+  flagged in ``metrics_json.quality``, and a stale or vendor-flagged quote still
+  prices the valuation and is only flagged in ``metrics_json.valuation.price_quality``;
 * the wide row is a snapshot: a whole-row upsert replaces the previous build and
   no DWD row is ever written;
 * missing is missing: an empty window year is an explicit ``null`` record with
@@ -54,10 +55,21 @@ from financecoffer.query import normalize_symbol
 
 _log = logging.getLogger(__name__)
 
-SOURCE_VERSION = "dws-1"
+SOURCE_VERSION = "dws-2"
 METRICS_SCHEMA = "dws.metrics.v1"
 DEFAULT_FISCAL_YEARS = 5
 MAX_FISCAL_YEARS = 10
+
+#: Calendar days after which the newest quote is called stale (spec §4.4.8).
+#: A normal A-share is never more than about 4 calendar days from its last
+#: quote, and the longest market closure is around 9, so 10 keeps holidays from
+#: being read as a suspension while still catching a week-long one. Changing it
+#: is a 口径 change and takes a ``source_version`` bump with it.
+PRICE_STALE_DAYS = 10
+
+#: Levels a build may write, highest precedence first (spec §4.4.8). The read
+#: side adds ``unknown`` for rows written before this 口径 existed.
+PRICE_QUALITY_LEVELS: tuple[str, ...] = ("missing", "bad", "stale", "suspicious", "ok")
 
 #: Two valuation bases are computed side by side and the reader picks one:
 #:
@@ -509,6 +521,71 @@ def _reference_valuation(
     }
 
 
+def _confidence_clause(confidence: str | None) -> str:
+    return f"（confidence={confidence}）" if confidence is not None else ""
+
+
+def _price_quality(quote: StockQuoteSnapshot | None, day: date) -> dict[str, Any]:
+    """Describe the quote the valuation is priced from (spec §4.4.8).
+
+    Annotation only: nothing here sets a PE/PB to ``null`` or rewrites a
+    ``pe_reason``, because the wide row never decides what is trustworthy --
+    iron law 2 and §5.1 keep that judgement with the consumer. Both valuation
+    bases share this one block: it describes an *input*, and they read the same
+    ``dwd.stock_quote_snapshot`` row; what differs between them is whether that
+    price entered the number, which ``pe_source`` already says.
+
+    Only ``as_of`` and the quote's own date drive it, never ``now()``, so two
+    runs over the same input stay byte-identical.
+    """
+
+    if quote is None or (quote.close is None and quote.total_market_cap is None):
+        return {
+            "level": "missing",
+            "reason": "no_price",
+            "age_days": None,
+            "quote_quality_status": quote.quality_status if quote is not None else None,
+            "quote_confidence": quote.confidence if quote is not None else None,
+            "note": "无可用报价，估值按缺失处理。",
+        }
+
+    age_days = (day - quote.trade_date).days
+    status = quote.quality_status
+    confidence = quote.confidence
+    price_date = quote.trade_date.isoformat()
+
+    def block(level: str, reason: str | None, note: str | None) -> dict[str, Any]:
+        return {
+            "level": level,
+            "reason": reason,
+            "age_days": age_days,
+            "quote_quality_status": status,
+            "quote_confidence": confidence,
+            "note": note,
+        }
+
+    if status == "bad":
+        return block(
+            "bad",
+            "quote_quality_bad",
+            f"上游将 {price_date} 的报价标记为异常{_confidence_clause(confidence)}。",
+        )
+    if age_days > PRICE_STALE_DAYS:
+        return block(
+            "stale",
+            "stale_quote",
+            f"最近报价 {price_date}，距数据截止 {day.isoformat()} 已 {age_days} 天，"
+            "未取得更新报价。",
+        )
+    if status == "suspicious":
+        return block(
+            "suspicious",
+            "quote_quality_suspicious",
+            f"上游将 {price_date} 的报价标记为可疑{_confidence_clause(confidence)}。",
+        )
+    return block("ok", None, None)
+
+
 def _risk_summary(
     events: Sequence[StockRiskEvent],
     *,
@@ -874,6 +951,7 @@ class DwsService:
                 "as_of": day.isoformat(),
                 "price_date": _iso(quote.trade_date) if quote is not None else None,
                 "price_close": money(quote.close) if quote is not None else None,
+                "price_quality": _price_quality(quote, day),
                 "default_basis": default_basis,
                 # The flat keys are a mirror of the default basis (spec
                 # §4.4.5), so a caller that never learned about ``bases``
@@ -1018,6 +1096,33 @@ class DwsService:
                     value is None or value >= 0,
                     f"valuation basis {name}.{metric_name} must not be negative",
                 )
+
+        price_quality = valuation.get("price_quality")
+        _require(
+            isinstance(price_quality, dict),
+            "metrics_json.valuation.price_quality must be an object",
+        )
+        level = price_quality.get("level")
+        _require(level in PRICE_QUALITY_LEVELS, f"unknown price_quality level {level}")
+        _require(
+            price_quality.get("reason") is None
+            or isinstance(price_quality.get("reason"), str),
+            "price_quality.reason must be a string or null",
+        )
+        _require(
+            level == "ok" or price_quality.get("reason") is not None,
+            "a flagged price_quality must carry a reason",
+        )
+        age_days = price_quality.get("age_days")
+        _require(
+            age_days is None
+            or (isinstance(age_days, int) and not isinstance(age_days, bool) and age_days >= 0),
+            "price_quality.age_days must be a non-negative integer or null",
+        )
+        _require(
+            level != "missing" or age_days is None,
+            "a missing quote must not report an age",
+        )
 
         risk = values["risk_summary"]
         counts = risk["counts"]
