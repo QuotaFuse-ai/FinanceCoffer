@@ -11,19 +11,21 @@
 
 | Job（同时是 check 名） | Runner | 步骤 |
 | --- | --- | --- |
-| `backend (pytest / ruff / mypy)` | `ubuntu-latest`，Python 3.11 | `pip install -e ".[all,dev,s3]"` → `pytest` → `ruff` → `mypy`（非阻断） |
+| `backend (pytest / ruff / mypy)` | `ubuntu-latest`，Python 3.11 | `public-docs` → `pip install -e ".[all,dev,s3]"` → `pytest` → `ruff` → `mypy`（非阻断） |
 
 原始命令（与 workflow 逐字一致）：
 
 ```bash
+python tools/check_public_docs.py
 python -m pip install -e ".[all,dev,s3]"
 python -m pytest -o addopts=""
 python -m ruff check .
 python -m mypy
 ```
 
-两点说明：
+几点说明：
 
+- `public-docs` 步骤跑 [`tools/check_public_docs.py`](../tools/check_public_docs.py)：公开面（`docs/`、`deploy/`、根 `README.md`）出现内部任务编号、团队称谓或本机绝对路径即非零退出，逐行打印 `文件:行: 命中原因`。它只依赖标准库，所以排在 `pip install` 之前——违规内容几秒内报出来，不必等装依赖。提交前钩子能被 `git commit --no-verify` 跳过，这一步不能；执行点结论见 [`DEC-0030`](decisions/DEC-0030-public-docs-check-also-runs-in-ci.md)。
 - `s3` extra 必须装：测试收集期会导入 `boto3`。
 - `mypy` 步骤带 `continue-on-error: true`，**当前不阻断合并**。截至 2026-10-31 有 24 条既有错误（13 个文件），属历史基线；清账后删掉 `continue-on-error` 即变成硬门禁。
 - `-o addopts=""` 覆盖 `pyproject.toml` 里的 `addopts = "-q"`，本地复现时不要省略。
@@ -38,6 +40,7 @@ python -m mypy
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[all,dev,s3]"
 
+.\.venv\Scripts\python.exe tools/check_public_docs.py
 .\.venv\Scripts\python.exe -X utf8 -m pytest -o addopts=""
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy
@@ -49,6 +52,7 @@ py -3.12 -m venv .venv
 python3 -m venv .venv
 ./.venv/bin/python -m pip install -e ".[all,dev,s3]"
 
+./.venv/bin/python tools/check_public_docs.py
 ./.venv/bin/python -m pytest -o addopts=""
 ./.venv/bin/python -m ruff check .
 ./.venv/bin/python -m mypy
@@ -79,4 +83,4 @@ venv 解释器路径差异：Windows 是 `.venv\Scripts\python.exe`，POSIX 是 
 
 - `backend (pytest / ruff / mypy)`
 
-注意：`mypy` 是同一 job 内的一个 step，不是独立 check；把它设成硬门禁要先在 workflow 里去掉 `continue-on-error`。配置完成后本文件需同步更新为实际值。
+注意：`mypy` 是同一 job 内的一个 step，不是独立 check；把它设成硬门禁要先在 workflow 里去掉 `continue-on-error`。`public-docs` 同理——它和 `pytest` / `ruff` / `mypy` 在同一个 job 内，所以新增这一步**不需要**新增 required check 名称，现有那个 check 名保持不变。配置完成后本文件需同步更新为实际值。
