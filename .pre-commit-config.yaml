@@ -1,0 +1,13 @@
+# 公开面内容检查：docs/、deploy/ 与根 README.md 不出现内部任务编号、团队称谓与
+# 本机绝对路径（判定口径见 docs/decisions/DEC-0025）。
+# 装一次生效：pre-commit install
+# 全量复检：pre-commit run public-docs --all-files
+repos:
+  - repo: local
+    hooks:
+      - id: public-docs
+        name: public docs carry no internal ids / team names / local paths
+        entry: python tools/check_public_docs.py
+        language: system
+        pass_filenames: false
+        always_run: true

@@ -59,7 +59,7 @@
 ### 2.3 键上的字段代次（定稿）
 
 > §2.3 / §3.3 / §3.4.2 / §3.7 / §7 G-02 中标注「定稿」的代码块逐字取自上游
-> `TickHub-CN:UNIT-AUDIT.md` §9.5（分支 `docs/quot-258-unit-decisions`，commit `83cc70e`）；
+> `TickHub-CN:UNIT-AUDIT.md` §9.5（commit `83cc70e`）；
 > 块内的 `§9.2` / `§9.4` 等编号指该文档的章节。
 
 ```text
