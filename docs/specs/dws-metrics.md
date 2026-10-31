@@ -2,8 +2,8 @@
 
 | 项 | 内容 |
 | --- | --- |
-| 版本 | v1.1.2（双口径估值 + 事件字段单位增补 + DWS 市场闸） |
-| 日期 | 2026-10-27（口径原文）/ 2026-10-30（迁入 `docs/specs/`）/ 2026-10-30（增补 `reference` 口径）/ 2026-10-31（§4.1 金额单位定稿与市场闸） |
+| 版本 | v1.1.3（双口径估值 + 事件字段单位增补 + DWS 市场闸 + §4.4.6/§4.4.7 文档收口） |
+| 日期 | 2026-10-27（口径原文）/ 2026-10-30（迁入 `docs/specs/`）/ 2026-10-30（增补 `reference` 口径）/ 2026-10-31（§4.1 金额单位定稿与市场闸）/ 2026-10-31（§4.4.6 MCP 描述对齐、§4.4.7 合并、补 v1.1 变更行） |
 | 状态 | 口径已定稿；§8 的 12 项**待人类确认** |
 | 依据 | `docs/specs/financecoffer.md` §4.3／§5、`docs/specs/db-schema.md`、`docs/specs/event-contract.md`、`docs/specs/cli.md`、`src/financecoffer/db/migrations/0005_dws.sql`、`src/financecoffer/db/models/dws.py`、`src/financecoffer/query/service.py` |
 | 产出物性质 | **文档 + SQL 草案**。不含生产代码，不改 `src/`，不建库、不跑数据。 |
@@ -421,17 +421,13 @@ roe_reference  = null + "equity_unavailable"
 | --- | --- | --- |
 | CLI | `fcoffer query structured --symbol S --valuation-basis snapshot\|reference` | 缺省取 `default_basis`（`snapshot`），大小写与首尾空格归一化 |
 | REST | `GET /v1/structured/{symbol}?valuation_basis=reference` | 同上；非法值返回 `400 E_INVALID_ARGUMENT`，`details.field="valuation_basis"` |
-| MCP | `query_structured_data(..., valuation_basis="reference")` | 同上，`anyOf` 枚举或 `null` |
+| MCP | `query_structured_data(..., valuation_basis="reference")` | 同上。`tools/list` 实际下发的 frame schema 由函数签名生成，`valuation_basis` 只有 `anyOf: [string, null]`、**不含 enum**（`additionalProperties` 同样不在 frame 里强制）；合法值以工具目录为准（`fcoffer mcp tools` 打印的 `TOOL_SPECS` 含 enum），非法值由运行时 `parse_valuation_basis` 拒绝：`E_INVALID_ARGUMENT`、`details.field="valuation_basis"` |
 
 返回的 `data.valuation` 固定带 `basis`（实际口径）、`default_basis`、`available_bases`（该行已构建的口径列表），以及该口径的 `pe` / `pb` / `roe` 与原因码。请求一个该行未构建的口径（例如旧宽表只有 `snapshot`）时**不报错**：返回 `pe=null`、`pe_reason="basis_not_built"`，同时 `available_bases` 会说明可选范围。
 
-#### 4.4.7 方案切换条件
-
-`default_basis` 保持 `snapshot`；满足以下任一条件时可改默认（或让客户侧固定选择），并回到本文修订：
-
 #### 4.4.7 默认口径的切换
 
-`default_basis` 保持 `snapshot`。需要改默认口径时，触发条件沿用 §4.4.3 的第 1–3 条，并同步修订本节与 §3.2 的示例；客户侧也可以不全局改默认，只在调用时传 `reference`。
+`default_basis` 保持 `snapshot`。需要改默认口径（或让客户侧固定选择）时，触发条件沿用 §4.4.3 的第 1–3 条，并同步修订本节与 §3.2 的示例；客户侧也可以不全局改默认，只在调用时传 `reference`。
 
 ### 4.5 PB
 
@@ -920,5 +916,7 @@ WHERE w.symbol = :'symbol';
 | --- | --- | --- |
 | 2026-10-27 | v1.0 | 首版：字段映射、口径定义、NULL 规则、幂等与重算、对账 SQL 草案、12 项待确认 |
 | 2026-10-30 | v1.0（迁移版） | 从原任务文档迁入 `docs/specs/dws-metrics.md`：剥离内部任务编号/作者/机器路径，增补迁移说明与交叉引用；口径、SQL 与 §8 未改动；M-01/M-02/M-04 标注已收敛 |
+| 2026-10-30 | v1.1 | 双口径估值（PR #6）：构建时同时落 `snapshot`（原 A 方案）与 `reference`（单季扣非 × 4 年化），默认读 `snapshot`，调用方按 `valuation_basis` 切换；上游新增可选字段 `financial.amount_net_profit_deducted`、`quote.pb_mrq`（迁移 `0013`）；新增 §3.2 `valuation.bases` 示例、§4.4.5 `reference` 口径、§4.4.6 读取时选择与 §4.5 的 PB 透传路径；M-07 改判部分收敛 |
 | 2026-10-30 | v1.1.1 | §4.1.1 合入上游 `UNIT-AUDIT.md` §9 草案：`total_market_cap` 为基本货币单位且消费端不再换算、`pb_mrq` 仅 `>0`、`amount_net_profit_deducted` 不得用归母顶替、`biz_key` 代次标记 `\|g2`、无币种列的已知限制与精度要求 |
 | 2026-10-31 | v1.1.2 | 定稿（上游 `UNIT-AUDIT.md` §9.4 / §9.5）：§4.1「金额单位」行写明**口径只适用 A 股**、US/HK 缺币种列时 `reference`/`snapshot` 一律 `null` + 原因码；§4.1.1 补 DWS 市场闸（`_build_one` 只接受 6 位数字 symbol，非 A 股进 `BuildReport.skipped` + `non_a_share_symbol`）与遗留宽表行的 `dws show` 表态规则。不改表、不改公式、不加 `currency`/`market` 列 |
+| 2026-10-31 | v1.1.3 | 文档收口，不改口径：合并重复的 §4.4.7 标题为「默认口径的切换」；§4.4.6 的 MCP 行改为描述**实际下发**的 frame schema（无 enum）与运行时的 `valuation_basis` 校验（`E_INVALID_ARGUMENT`、`details.field="valuation_basis"`）；§10 补记缺失的 v1.1 行 |
