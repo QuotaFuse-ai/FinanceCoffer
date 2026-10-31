@@ -24,7 +24,7 @@ python -m mypy
 
 两点说明：
 
-- `s3` extra 必须装：测试收集期会导入 `boto3`（QUOT-238）。
+- `s3` extra 必须装：测试收集期会导入 `boto3`。
 - `mypy` 步骤带 `continue-on-error: true`，**当前不阻断合并**。截至 2026-10-31 有 24 条既有错误（13 个文件），属历史基线；清账后删掉 `continue-on-error` 即变成硬门禁。
 - `-o addopts=""` 覆盖 `pyproject.toml` 里的 `addopts = "-q"`，本地复现时不要省略。
 

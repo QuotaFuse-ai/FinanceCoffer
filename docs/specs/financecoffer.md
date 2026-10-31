@@ -132,7 +132,7 @@ CREATE INDEX idx_fin_snapshot_symbol_date
 
 - 数据源：直接复用上游 `clean_content`，不重复清洗。
 - 切片：512 token，重叠 50 token。
-- 模型：本地 `BAAI/bge-m3`（DEC-0005），维度 **1024**（`FC_EMBEDDING_DIM` 落库前必须与表定义一致）。
+- 模型：本地 `BAAI/bge-m3`，维度 **1024**（`FC_EMBEDDING_DIM` 落库前必须与表定义一致）。
 - 调用方式：HTTP 调用本地 embedding 服务（OpenAI 兼容 `/v1/embeddings`，可用 TEI / Ollama / Xinference 承载），FinanceCoffer 内不内嵌模型权重；返回向量做 L2 归一化后再落库。
 - 索引：HNSW + cosine。
 - 换模型或改维度必须新建表并全量重跑 `fcoffer vector reindex`，禁止原地 `ALTER` 混存两套向量。
@@ -162,7 +162,7 @@ CREATE INDEX idx_ann_chunk_embedding
 | 冷 | 3 年以上 | 大文本 / PDF 上传 MinIO；成功后 PG 大字段置 `NULL`，`is_cold = true`，写 `minio_url` |
 | 大文本 | 单条 > 8KB | 无论年份，一律转存 MinIO |
 
-归档任务幂等：先上传再置空，失败保持原状并以 `ops.archive_job` 的 `status = 'failed'` 记录（对外指标为 `fc_archive_job_total{status="failed"}`，DEC-0022）；提供 `fcoffer archive restore --symbol ...` 回读校验。
+归档任务幂等：先上传再置空，失败保持原状并以 `ops.archive_job` 的 `status = 'failed'` 记录（对外指标为 `fc_archive_job_total{status="failed"}`）；提供 `fcoffer archive restore --symbol ...` 回读校验。
 
 ## 5. 混合检索（防性能雪崩）
 
@@ -303,13 +303,13 @@ CREATE INDEX idx_ann_chunk_embedding
 | `fc_etl_events_total{status}` | Counter | 消费成功/失败；`status` ∈ `received/processing/done/failed/dlq/duplicate` |
 | `fc_dirty_data_total{reason}` | Counter | 落库脏数据 / 勾稽失败总数 |
 | `fc_missing_chunk_total` | Counter | 大文本转存或切片失败数 |
-| `fc_archive_job_total{status}` | Counter | 归档任务；`status` ∈ `pending/running/done/failed`，`failed` 即归档失败（DEC-0022，唯一名字） |
+| `fc_archive_job_total{status}` | Counter | 归档任务；`status` ∈ `pending/running/done/failed`，`failed` 即归档失败（唯一名字） |
 | `fc_vector_chunks_total{status}` | Counter | 切片写入/删除行数 |
 | `fc_vector_embeddings_total{status}` | Counter | 向量接受/拒收条数 |
 | `fc_vector_search_seconds` | Histogram | 混合检索耗时 |
 | `fc_pg_pool_in_use` | — | **不适用，不再暴露**（原因见下） |
 
-三条输出约定（DEC-0022）：
+三条输出约定：
 
 1. **注册即输出**：上表每个家族在每次抓取时都会出现，没有数据时输出 0 值基线，不按「非空才渲染」。`status` / `reason` 的零值基线取 DDL 的 CHECK 值域与 `etl/processor.py:classify_failure` 的固定分类；其他 `reason` 出现时按实际值追加。`ops.*` 采样失败时同样输出零值基线，并在 API 日志打 WARN（`metrics: ops sample unavailable`），避免「无告警」被误读为「一切正常」。
 2. **仅 Prometheus 文本格式**：`/metrics` 只输出 `text/plain; version=0.0.4`，`Accept` 头不影响响应体；Prometheus 只解析该格式，需要 JSON 的脚本请用 CLI `fcoffer metrics --format json`（客户端转换）。
@@ -325,7 +325,7 @@ CREATE INDEX idx_ann_chunk_embedding
 | --- | --- | --- |
 | `FC_DB_URL` | — | `postgresql://user:pass@127.0.0.1:5432/financecoffer` |
 | `FC_EMBEDDING_DIM` | `1024` | 向量维度，必须与 `vector.announcement_chunk.embedding` 一致 |
-| `FC_EMBEDDING_PROVIDER` | `local` | `local`（bge-m3，DEC-0005）；`openai` 仅作备用开关 |
+| `FC_EMBEDDING_PROVIDER` | `local` | `local`（bge-m3）；`openai` 仅作备用开关 |
 | `FC_EMBEDDING_MODEL` | `BAAI/bge-m3` | 模型名，随服务端部署一致 |
 | `FC_EMBEDDING_URL` | `http://127.0.0.1:8080/v1/embeddings` | 本地 embedding 服务地址（OpenAI 兼容） |
 | `FC_EMBEDDING_API_KEY` | — | 备用；本地服务可留空 |
@@ -336,12 +336,12 @@ CREATE INDEX idx_ann_chunk_embedding
 | `FC_EVENT_CONSUMER` | `redis` | `redis` / `kafka` / `webhook` |
 | `FC_REDIS_URL` | `redis://127.0.0.1:6379/1` | 事件流 |
 | `FC_MCP_TOKEN` | — | MCP HTTP Bearer |
-| `FC_COMPLIANCE_ENABLED` | `false` | 合规标记开关（DEC-0010）：关闭时不读写 `compliance_tier`/`commercial_use`，开启时写入必填、读取回填 `meta.compliance_tier` |
+| `FC_COMPLIANCE_ENABLED` | `false` | 合规标记开关：关闭时不读写 `compliance_tier`/`commercial_use`，开启时写入必填、读取回填 `meta.compliance_tier` |
 | `FC_LOG_LEVEL` | `INFO` | 日志级别 |
 
 加载时的取值校验有两种，都以内层 `E_CONFIG` 报错并点名变量，不回显值：
 
-- **凭据字段拒绝模板占位符**（`FC_EMBEDDING_API_KEY`、`FC_MINIO_ACCESS_KEY`、`FC_MINIO_SECRET_KEY`、`FC_MCP_TOKEN`，DEC-0024）：值精确等于 `CHANGE_ME` 时拒绝。部署模板现在直接留空，这条校验保留为旧模板文件的兜底。空值与缺省值表示「未启用」（loopback-only 部署不设 MCP token、`local` provider 不用 API key），照常加载，且 `fcoffer config show` 中保持为空而非掩码。照抄模板而未填写的副本仍然无法启动：`compose.yaml` 对必填项用 `${VAR:?}` 拒绝空值，`FC_DB_URL` 为空时应用侧报 `E_CONFIG`（not configured）。
+- **凭据字段拒绝模板占位符**（`FC_EMBEDDING_API_KEY`、`FC_MINIO_ACCESS_KEY`、`FC_MINIO_SECRET_KEY`、`FC_MCP_TOKEN`）：值精确等于 `CHANGE_ME` 时拒绝。部署模板现在直接留空，这条校验保留为旧模板文件的兜底。空值与缺省值表示「未启用」（loopback-only 部署不设 MCP token、`local` provider 不用 API key），照常加载，且 `fcoffer config show` 中保持为空而非掩码。照抄模板而未填写的副本仍然无法启动：`compose.yaml` 对必填项用 `${VAR:?}` 拒绝空值，`FC_DB_URL` 为空时应用侧报 `E_CONFIG`（not configured）。
 - **DSN 项的 scheme 校验**（`FC_DB_URL` 须为 `postgresql://` 或 `postgresql+psycopg://`，`FC_REDIS_URL` 须为 `redis://` 或 `rediss://`）。
 
 完整变量清单见 `docs/specs/naming.md`。
@@ -376,14 +376,14 @@ CREATE INDEX idx_ann_chunk_embedding
 | 日期 | 版本 | 变更 |
 | --- | --- | --- |
 | 2026-10-26 | v0.1 | 首版，依据 v1.0 文档更名并整理 |
-| 2026-10-26 | v0.2 | G-06 定案：embedding 改用本地 bge-m3 1024 维（DEC-0005），DDL、环境变量、CLI 同步更新 |
-| 2026-10-27 | v0.3 | G-11 改为运行时开关 `FC_COMPLIANCE_ENABLED`（默认关闭，DEC-0010）；§6.2 REST 接口进入实现范围 |
+| 2026-10-26 | v0.2 | G-06 定案：embedding 改用本地 bge-m3 1024 维，DDL、环境变量、CLI 同步更新 |
+| 2026-10-27 | v0.3 | G-11 改为运行时开关 `FC_COMPLIANCE_ENABLED`（默认关闭）；§6.2 REST 接口进入实现范围 |
 | 2026-10-27 | v0.4 | `cli.md` 新增错误码表（第 5 节），同步 §6.2 的交叉引用 |
 | 2026-10-27 | v0.5 | 清理历史产品名与内部环境信息，文档只保留 FinanceCoffer 命名 |
-| 2026-10-29 | v0.6 | §7 改为「注册即输出」（无数据输出 0 值基线）、明确 `/metrics` 仅 Prometheus 文本格式（`Accept` 不生效，JSON 走 CLI）、归档指标统一为 `fc_archive_job_total{status}`（DEC-0022，`fc_archive_failed_total` 废弃，§4.5 同步）、`fc_pg_pool_in_use` 标注不适用（查询层 psycopg 直连，无连接池）；补登 `fc_vector_chunks_total`、`fc_vector_embeddings_total`、`fc_archive_job_total` 的 `status` 值域 |
+| 2026-10-29 | v0.6 | §7 改为「注册即输出」（无数据输出 0 值基线）、明确 `/metrics` 仅 Prometheus 文本格式（`Accept` 不生效，JSON 走 CLI）、归档指标统一为 `fc_archive_job_total{status}`（`fc_archive_failed_total` 废弃，§4.5 同步）、`fc_pg_pool_in_use` 标注不适用（查询层 psycopg 直连，无连接池）；补登 `fc_vector_chunks_total`、`fc_vector_embeddings_total`、`fc_archive_job_total` 的 `status` 值域 |
 | 2026-10-29 | v0.7 | 新增 §6.2.1：`/health` 的 `checks` 统一为 `{status, elapsed_ms?, ...}` 对象、`status` 闭集词表（`ok`/`degraded`/`unreachable`/`not_configured`，`not_installed` 废止）、降级判定表、`etl` 以 60 秒告警阈值为积压判定（消灭 `unknown`）、REST 与 CLI `fcoffer health` 的差异及原因、每次请求两连接的已知限制；依据：客户端可消费的形状必须唯一，且就绪判定与告警不得对同一积压给出相反结论 |
 | 2026-10-29 | v0.8 | §6.2.1 的 `minio` 探针由「尚未实现」改为已落地的 `HeadBucket` 单次探测（含 `not_configured` / `unreachable` 的判定条件），REST 与 CLI 检查项清单同步；`redis` 的「客户端未安装」分支按统一形状不再给 `elapsed_ms`，自有字段列补注。依据：可选依赖的就绪语义以代码可验证的行为为准，`elapsed_ms` 只表示真正发起过的探测耗时 |
 | 2026-10-29 | v0.9 | 变更记录 v0.4 行删除内部任务号，只留业务描述（公开仓库规则：`docs/` 不出现内部任务编号）；本文件现已无任务号残留，其余历史行的编号形态不在此单处理 |
-| 2026-10-29 | v0.10 | §8 补记加载时的两类取值校验：凭据字段拒绝字面量 `CHANGE_ME`（DEC-0024，照抄模板的副本无法启动）、DSN 项 scheme 校验；写明空值/缺省表示「未启用」仍照常加载。依据：配置层行为变更后规格须同步，否则测试无法按本文比对 |
-| 2026-10-29 | v0.11 | §10 验收口径改为职能表述（「验收环节」「第 3 节的安全边界」），删除团队称谓（DEC-0025，公开仓库规则：`docs/` 不出现内部任务编号与团队称谓） |
-| 2026-10-29 | v0.12 | §8 同步部署模板口径变更：`deploy/.env.example` 的凭据项一律留空（DEC-0027），`CHANGE_ME` 校验降为旧模板兜底；「照抄模板无法启动」的依据改为 compose 的 `${VAR:?}` 与空 DSN 报 `E_CONFIG`。依据：模板取值策略变更后，规格里描述启动失败原因的句子必须与实际机制一致 |
+| 2026-10-29 | v0.10 | §8 补记加载时的两类取值校验：凭据字段拒绝字面量 `CHANGE_ME`（照抄模板的副本无法启动）、DSN 项 scheme 校验；写明空值/缺省表示「未启用」仍照常加载。依据：配置层行为变更后规格须同步，否则测试无法按本文比对 |
+| 2026-10-29 | v0.11 | §10 验收口径改为职能表述（「验收环节」「第 3 节的安全边界」），删除团队称谓（公开仓库规则：`docs/` 不出现内部任务编号与团队称谓） |
+| 2026-10-29 | v0.12 | §8 同步部署模板口径变更：`deploy/.env.example` 的凭据项一律留空，`CHANGE_ME` 校验降为旧模板兜底；「照抄模板无法启动」的依据改为 compose 的 `${VAR:?}` 与空 DSN 报 `E_CONFIG`。依据：模板取值策略变更后，规格里描述启动失败原因的句子必须与实际机制一致 |
