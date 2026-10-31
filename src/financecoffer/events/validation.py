@@ -72,7 +72,7 @@ class ValidatedEvent:
 
     ``raw`` is the untouched input; T-005 persists it as-is. ``compliance`` is
     ``None`` whenever the switch is off, which is also when the compliance
-    fields were never read.
+    fields were never read, and for ``heartbeat``, which is never marked.
     """
 
     schema_version: str
@@ -177,7 +177,14 @@ def validate_event(
             },
         )
 
-    compliance = _compliance_mark(raw.get("source_info"), enabled=compliance_enabled)
+    # Contract 3.8 / G-10: a heartbeat is liveness state that only refreshes
+    # ``ops.source_heartbeat``, which has no compliance columns, so it stays
+    # unmarked and the gate must not reject it for a missing mark.
+    compliance = (
+        None
+        if envelope.data_type is EventDataType.HEARTBEAT
+        else _compliance_mark(raw.get("source_info"), enabled=compliance_enabled)
+    )
 
     return ValidatedEvent(
         schema_version=envelope.schema_version,

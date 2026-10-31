@@ -416,6 +416,24 @@ def test_enabled_compliance_rejects_a_non_boolean_flag() -> None:
     assert errors[0]["field"] == "source_info.commercial_use"
 
 
+def test_enabled_compliance_lets_a_heartbeat_through_unmarked() -> None:
+    """Contract 3.8: a heartbeat carries only ``provider`` and must not be rejected."""
+
+    validated = events.validate_event(payload("heartbeat"), compliance_enabled=True)
+
+    assert validated.data_type is models.EventDataType.HEARTBEAT
+    assert validated.compliance is None
+    assert "compliance" not in validated.summary()
+
+
+@pytest.mark.parametrize("data_type", sorted(set(CONTENT) - {"heartbeat"}))
+def test_enabled_compliance_still_rejects_a_data_event_without_a_mark(data_type: str) -> None:
+    errors, details = problems(payload(data_type), compliance_enabled=True)
+
+    assert details["reason"] == "compliance"
+    assert errors[0]["field"] == "source_info.compliance_tier"
+
+
 def test_ingest_event_validate_only_emits_the_normalized_event(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
