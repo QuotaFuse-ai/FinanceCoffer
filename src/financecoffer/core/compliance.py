@@ -4,7 +4,9 @@ The switch is off by default. Off means the compliance fields are not
 considered at all: callers get ``None`` back and must store/return nothing.
 On means every ingested record is marked with the source's tier and the
 ``commercial_use`` flag; a source that cannot be marked is rejected instead of
-being stored unmarked, so an enabled deployment never holds a silent gap.
+being stored unmarked, so an enabled deployment never holds a silent gap. The
+one exception is ``heartbeat``: contract 3.8 keeps it out of every table that
+has these columns, so ``validate_event`` never asks for its mark.
 
 Tiers come from ``docs/specs/event-contract.md`` section 7: S/B/C/D/X.
 """
