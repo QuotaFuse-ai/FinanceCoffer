@@ -34,6 +34,8 @@ DEC-0029 第 5 条自己记下了缺口：钩子可以被 `git commit --no-verif
 
 6. **验收要在真实 CI 上看红绿**，本地退出码只算前置。红测落点用**一次性验证分支 + 验证 PR**：在开发分支之上新建分支，往 `docs/` 加一个含违规行的新文件，PR 变红；删掉该文件再推，PR 变绿；关闭 PR 且不合并，删除临时分支。不在交付分支上做「加了再删」，因为本仓主干历史按 merge commit 合并（`main` 顶端即是），中间 commit 合并后会永久可达 `main` 历史——违规内容不得合入任何主分支这条要求，包含「不得留在历史里」。
 
+7. **「CI 硬门禁」这句话有一个前提，没配之前它只是红灯**：CI 给出红绿信号，但要它真的挡住合并，需要仓库管理员把 check 设为 required。实测口径（核对方式见 `docs/CI.md` 第三节）：main `protected: false`、rulesets `[]`。在这个状态下，一个变红的 PR 仍然能被合进 `main`——跳过提交前钩子的人换成了无视红灯的人，`--no-verify` 并没有被真正堵死。所以本决策同时要求：把 `backend (pytest / ruff / mypy)` 这个 check 名设为 required（`public-docs` 在同一 job 内，跟着这一个 check 一起生效，不需要额外名称）。在这条配置落地之前，第 1 条的「硬门禁」应当读作「不可跳过、且当前唯一的机器执行点」。
+
 ## 权衡
 
 - **既然 pytest 已经会跑同一条基线用例，为什么还要显式 step？** `tests/unit/test_public_docs.py::test_repo_public_surface_is_clean` 确实在 CI 的 pytest 步骤里跑同一个脚本，且已被 PR #2 验证过拦截力（main 上 1 failed，清理后全绿）。但它失败时报的是测试用例名加断言 diff，违规行号和原因藏在 pytest 的 stdout 里；显式 step 直接把 `文件:行: 命中原因` 摊在 step 日志首屏，谁都能看到该改哪一行。重复一次的成本是几毫秒（公开面百余个文本文件全量扫描），换来的是可读的失败信号，值得。

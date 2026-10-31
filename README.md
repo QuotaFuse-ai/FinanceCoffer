@@ -245,7 +245,7 @@ FinanceCoffer/
 python tools/check_public_docs.py
 ```
 
-同一个脚本挂在提交前钩子上（`.pre-commit-config.yaml`），装一次即生效：`pre-commit install`。持续集成流水线（`.github/workflows/ci.yml` 的 `public-docs` step）在每次 pull request 与推送到 `main` 时都会再跑一遍同一个脚本——钩子可以用 `--no-verify` 跳过，CI 不能，所以 CI 是硬门禁，钩子只是本地可选项。词表与豁免路径都是脚本内的常量，发现新的写法直接追加即可。
+同一个脚本挂在提交前钩子上（`.pre-commit-config.yaml`），装一次即生效：`pre-commit install`。持续集成流水线（`.github/workflows/ci.yml` 的 `public-docs` step）在每次 pull request 与推送到 `main` 时都会再跑一遍同一个脚本——钩子可以用 `--no-verify` 跳过，CI 不能。CI 是唯一不依赖个人环境的执行点；把它变成立得住的门禁，还需要管理员把这个 check 设为 required（现状见 [`docs/CI.md` 第三节](docs/CI.md)）。词表与豁免路径都是脚本内的常量，发现新的写法直接追加即可。
 
 ## 11. 许可与免责
 
