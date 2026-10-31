@@ -195,6 +195,28 @@ def _year_number(record: Mapping[str, Any]) -> int | None:
     return int(year) if isinstance(year, str) and year.isdigit() else None
 
 
+#: What the read side reports for a wide row built before ``price_quality``
+#: existed (spec §4.4.8). Recomputing it at read time would need ``now()`` and a
+#: second copy of the 口径, so the age is simply unknown -- and must never be
+#: presented as ``ok``. The next ``dws build`` fills it in.
+PRICE_QUALITY_NOT_BUILT: dict[str, Any] = {
+    "level": "unknown",
+    "reason": "not_built",
+    "age_days": None,
+    "quote_quality_status": None,
+    "quote_confidence": None,
+    "note": "该行构建时未记录报价质量，报价是否新鲜无法判断。",
+}
+
+
+def _echo_price_quality(stored: Any) -> dict[str, Any]:
+    """Pass the stored block through untouched, or say that it was never built."""
+
+    if isinstance(stored, Mapping):
+        return dict(stored)
+    return dict(PRICE_QUALITY_NOT_BUILT)
+
+
 def _select_valuation(
     metrics_json: Any, requested_basis: str | None
 ) -> dict[str, Any] | None:
@@ -205,6 +227,9 @@ def _select_valuation(
     requested basis that the row never built returns ``pe_reason`` set to
     ``basis_not_built`` rather than an error: the row is valid, it is merely
     older than the request.
+
+    ``price_quality`` describes the quote both bases read, so it comes off the
+    stored ``valuation`` and is the same object whichever basis is selected.
     """
 
     if not isinstance(metrics_json, Mapping):
@@ -240,6 +265,7 @@ def _select_valuation(
             "as_of": raw.get("as_of"),
             "price_date": raw.get("price_date"),
             "price_close": raw.get("price_close"),
+            "price_quality": _echo_price_quality(raw.get("price_quality")),
         }
     )
     return result

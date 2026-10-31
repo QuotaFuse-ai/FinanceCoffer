@@ -17,10 +17,13 @@ from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+import anyio
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from typer.testing import CliRunner
 
+from financecoffer.api import create_app
 from financecoffer.cli import app
 from financecoffer.core.config import Config
 from financecoffer.core.errors import ErrorCode, NotFoundError
@@ -35,6 +38,8 @@ from financecoffer.db.repositories.dwd import (
 from financecoffer.db.repositories.dws import AgentAnalysisWideRepository
 from financecoffer.db.session import Database
 from financecoffer.dws import DwsService
+from financecoffer.mcp.server import create_server
+from financecoffer.query.service import QueryService
 
 AS_OF = "2026-10-27"
 PROVIDER = "t008-dws"
@@ -104,6 +109,8 @@ def seed_quote(
     close: Decimal | None = Decimal("10.0000"),
     market_cap: Decimal | None = None,
     pe_ttm: Decimal | None = None,
+    quality: str = "normal",
+    confidence: str | None = "high",
     tier: str | None = None,
     commercial: bool | None = None,
 ) -> None:
@@ -114,8 +121,8 @@ def seed_quote(
             close=close,
             total_market_cap=market_cap,
             pe_ttm=pe_ttm,
-            quality_status="normal",
-            confidence="high",
+            quality_status=quality,
+            confidence=confidence,
             fetch_time=FETCH,
             event_id=_event_id("quote", symbol, trade_date),
             provider=PROVIDER,
@@ -246,7 +253,7 @@ def test_five_year_series(db: Database) -> None:
     assert row is not None
     assert row.as_of.astimezone(UTC) == datetime(2026, 10, 27, tzinfo=UTC)
     assert row.fiscal_years == 5
-    assert row.source_version == "dws-1"
+    assert row.source_version == "dws-2"
 
     metrics = row.metrics_json
     assert metrics["schema"] == "dws.metrics.v1"
@@ -299,6 +306,14 @@ def test_five_year_series(db: Database) -> None:
         "as_of": AS_OF,
         "price_date": None,
         "price_close": None,
+        "price_quality": {
+            "level": "missing",
+            "reason": "no_price",
+            "age_days": None,
+            "quote_quality_status": None,
+            "quote_confidence": None,
+            "note": "无可用报价，估值按缺失处理。",
+        },
         "default_basis": "snapshot",
         "pe_source": None,
         "pe": None,
@@ -758,7 +773,7 @@ def test_show_matches_the_stored_row_and_rejects_unknown_symbols(db: Database) -
     assert shown["risk_summary"] == row.risk_summary
     assert shown["latest_announcements"] == row.latest_announcements
     assert shown["fiscal_years"] == row.fiscal_years
-    assert shown["source_version"] == "dws-1"
+    assert shown["source_version"] == "dws-2"
     assert missing.value.code is ErrorCode.E_NOT_FOUND
 
 
@@ -944,3 +959,175 @@ def test_dws_models_and_dwd_rows_are_the_only_tables_touched(db: Database) -> No
             )
         ).scalars().all()
     assert before == after
+
+
+# -- price_quality (QUOT-257) ------------------------------------------------
+
+
+#: ``as_of`` is 2026-10-27, so 2026-10-23 is 4 days old and 2026-09-09 is 48.
+PRICE_QUALITY_CASES: tuple[tuple[str, str, str, dict[str, object]], ...] = (
+    (
+        "810040",
+        "2026-10-23",
+        "normal",
+        {
+            "level": "ok",
+            "reason": None,
+            "age_days": 4,
+            "quote_quality_status": "normal",
+            "quote_confidence": "high",
+            "note": None,
+        },
+    ),
+    (
+        "810041",
+        "2026-10-23",
+        "bad",
+        {
+            "level": "bad",
+            "reason": "quote_quality_bad",
+            "age_days": 4,
+            "quote_quality_status": "bad",
+            "quote_confidence": "high",
+            "note": "上游将 2026-10-23 的报价标记为异常（confidence=high）。",
+        },
+    ),
+    (
+        "810042",
+        "2026-10-23",
+        "suspicious",
+        {
+            "level": "suspicious",
+            "reason": "quote_quality_suspicious",
+            "age_days": 4,
+            "quote_quality_status": "suspicious",
+            "quote_confidence": "high",
+            "note": "上游将 2026-10-23 的报价标记为可疑（confidence=high）。",
+        },
+    ),
+    (
+        "810043",
+        "2026-09-09",
+        "normal",
+        {
+            "level": "stale",
+            "reason": "stale_quote",
+            "age_days": 48,
+            "quote_quality_status": "normal",
+            "quote_confidence": "high",
+            "note": "最近报价 2026-09-09，距数据截止 2026-10-27 已 48 天，未取得更新报价。",
+        },
+    ),
+)
+
+
+def _seed_price_quality_cases(db: Database) -> None:
+    symbols: list[str] = []
+    for symbol, trade_date, quality, _expected in PRICE_QUALITY_CASES:
+        seed_financial(db, symbol, report_date="2025-12-31")
+        seed_quote(
+            db,
+            symbol,
+            trade_date=trade_date,
+            market_cap=Decimal("2000000.0000"),
+            quality=quality,
+        )
+        symbols.append(symbol)
+    with service(db) as svc:
+        assert svc.build(symbols, as_of=AS_OF).counts["built"] == len(symbols)
+
+
+def test_price_quality_lands_in_the_wide_row_without_moving_a_number(
+    db: Database,
+) -> None:
+    """The flag annotates the quote; it never downgrades the valuation (§4.4.8)."""
+
+    _seed_price_quality_cases(db)
+
+    for symbol, _trade_date, _quality, expected in PRICE_QUALITY_CASES:
+        row = wide_row(db, symbol)
+        assert row is not None
+        assert row.source_version == "dws-2"
+        valuation = row.metrics_json["valuation"]
+        assert valuation["price_quality"] == expected
+        # One shared block: the bases describe the numbers, not the input.
+        assert all("price_quality" not in basis for basis in valuation["bases"].values())
+
+    def without_flag(symbol: str) -> str:
+        valuation = wide_row(db, symbol).metrics_json["valuation"]  # type: ignore[union-attr]
+        return json.dumps(
+            {key: value for key, value in valuation.items() if key != "price_quality"},
+            sort_keys=True,
+        )
+
+    # 810040 and 810041 differ only in the vendor flag, and their price does
+    # enter the number (market_cap / net_profit), so PE/PB must be identical.
+    assert without_flag("810040") == without_flag("810041") == without_flag("810042")
+    assert wide_row(db, "810040").metrics_json["valuation"]["pe"] == 20.0  # type: ignore[union-attr]
+
+
+def test_price_quality_is_echoed_by_cli_rest_and_mcp(db: Database) -> None:
+    _seed_price_quality_cases(db)
+    stale = PRICE_QUALITY_CASES[3][3]
+
+    cli = runner.invoke(
+        app, ["--db-url", db.dsn, "query", "structured", "--symbol", "810043"]
+    )
+    assert cli.exit_code == 0, cli.output
+    echoed = {"cli": json.loads(cli.stdout)["data"]["valuation"]}
+
+    query = QueryService(config=Config(db_url=db.dsn, rate_limit_enabled=False))
+    client = TestClient(create_app(config=query.config, service=query))
+    rest = client.get("/v1/structured/810043").json()["data"]["valuation"]
+    server = create_server(query)
+    mcp = json.loads(
+        anyio.run(
+            lambda: server.call_tool("query_structured_data", {"symbol": "810043"})
+        ).content[0].text
+    )["data"]["valuation"]
+
+    echoed.update({"rest": rest, "mcp": mcp})
+    for surface in echoed.values():
+        assert surface["price_quality"] == stale
+        assert surface["price_date"] == "2026-09-09"
+    assert echoed["cli"] == echoed["rest"] == echoed["mcp"]
+
+    # The same block rides along whichever basis is asked for.
+    switched = client.get(
+        "/v1/structured/810043", params={"valuation_basis": "reference"}
+    ).json()["data"]["valuation"]
+    via_mcp = json.loads(
+        anyio.run(
+            lambda: server.call_tool(
+                "query_structured_data",
+                {"symbol": "810043", "valuation_basis": "reference"},
+            )
+        ).content[0].text
+    )["data"]["valuation"]
+    assert switched["pe"] != rest["pe"]
+    assert switched["price_quality"] == via_mcp["price_quality"] == stale
+
+
+def test_a_row_built_without_price_quality_still_answers(db: Database) -> None:
+    """Compatibility: an old dws-1 row is readable and reports unknown."""
+
+    symbol = "810044"
+    seed_financial(db, symbol, report_date="2025-12-31")
+    seed_quote(db, symbol, trade_date="2026-10-23", market_cap=Decimal("2000000.0000"))
+    with service(db) as svc:
+        assert svc.build([symbol], as_of=AS_OF).counts["built"] == 1
+
+    with db.session_scope() as session:
+        row = session.get(StockAgentAnalysisWide, symbol)
+        assert row is not None
+        metrics = json.loads(json.dumps(row.metrics_json))
+        del metrics["valuation"]["price_quality"]
+        row.metrics_json = metrics
+
+    query = QueryService(config=Config(db_url=db.dsn, rate_limit_enabled=False))
+    client = TestClient(create_app(config=query.config, service=query))
+    valuation = client.get(f"/v1/structured/{symbol}").json()["data"]["valuation"]
+
+    assert valuation["price_quality"]["level"] == "unknown"
+    assert valuation["price_quality"]["age_days"] is None
+    assert valuation["pe"] == 20.0

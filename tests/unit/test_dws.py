@@ -7,8 +7,9 @@ end-to-end contract is covered by ``tests/integration/test_dws_integration.py``.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -30,8 +31,10 @@ from financecoffer.dws import (
 )
 from financecoffer.dws.builder import (
     NON_A_SHARE_REASON,
+    PRICE_STALE_DAYS,
     _latest_deducted_quarter,
     _pe_for_year,
+    _price_quality,
     _reference_valuation,
     _select_years,
     is_a_share_symbol,
@@ -73,6 +76,8 @@ def _quote(
     market_cap: str | None = None,
     pe_ttm: str | None = None,
     pb: str | None = None,
+    quality: str = "normal",
+    confidence: str | None = "high",
 ) -> StockQuoteSnapshot:
     return StockQuoteSnapshot(
         symbol="600000",
@@ -82,10 +87,10 @@ def _quote(
         total_market_cap=None if market_cap is None else Decimal(market_cap),
         pe_ttm=None if pe_ttm is None else Decimal(pe_ttm),
         pb_mrq=None if pb is None else Decimal(pb),
-        quality_status="normal",
-        confidence="high",
+        quality_status=quality,
+        confidence=confidence,
         fetch_time=FETCH,
-        event_id=f"quote:{trade_date}",
+        event_id=f"quote:{trade_date}:{quality}:{confidence}",
         provider="test",
     )
 
@@ -362,14 +367,20 @@ class _StubSession:
         return _Scalars(self._results.pop(0))
 
 
-def _compose_values(default_basis: str) -> tuple[DwsService, dict[str, Any]]:
+def _compose_values(
+    default_basis: str, *, quote: StockQuoteSnapshot | None = None
+) -> tuple[DwsService, dict[str, Any]]:
     session = _StubSession(
         [
             _financial("2025-09-30", report_type="Q3", deducted="110000.0000"),
             _financial("2025-06-30", report_type="Q2", deducted="60000.0000"),
             _financial("2025-12-31", profit="100000.0000"),
         ],
-        [_quote("2026-01-05", market_cap="2000000.0000", pe_ttm="15.0000", pb="1.5000")],
+        [
+            quote
+            if quote is not None
+            else _quote("2026-01-05", market_cap="2000000.0000", pe_ttm="15.0000", pb="1.5000")
+        ],
         [],  # risk events
         [],  # announcements
     )
@@ -448,3 +459,152 @@ def test_compose_keeps_the_snapshot_mirror_by_default() -> None:
     assert valuation["pe"] == 15.0
     assert valuation["pb"] is None
     assert valuation["pb_reason"] == "no_equity"
+
+
+# -- price_quality (QUOT-257) ------------------------------------------------
+
+
+_AS_OF_DAY = date(2026, 10, 27)
+
+
+def _quality_at(days: int, **kwargs: Any) -> dict[str, Any]:
+    """Price quality for a quote exactly ``days`` calendar days before as_of."""
+
+    trade_date = _AS_OF_DAY - timedelta(days=days)
+    return _price_quality(_quote(trade_date.isoformat(), **kwargs), _AS_OF_DAY)
+
+
+def test_price_quality_is_ok_for_a_fresh_normal_quote() -> None:
+    quality = _quality_at(4)
+
+    assert quality == {
+        "level": "ok",
+        "reason": None,
+        "age_days": 4,
+        "quote_quality_status": "normal",
+        "quote_confidence": "high",
+        "note": None,
+    }
+
+
+def test_price_quality_stale_threshold_is_ten_calendar_days() -> None:
+    """9 and 10 days stay fresh; 11 is stale -- the boundary is exclusive."""
+
+    assert _quality_at(9)["level"] == "ok"
+    assert _quality_at(PRICE_STALE_DAYS)["level"] == "ok"
+    assert _quality_at(PRICE_STALE_DAYS + 1) == {
+        "level": "stale",
+        "reason": "stale_quote",
+        "age_days": 11,
+        "quote_quality_status": "normal",
+        "quote_confidence": "high",
+        "note": (
+            "最近报价 2026-10-16，距数据截止 2026-10-27 已 11 天，未取得更新报价。"
+        ),
+    }
+
+
+def test_price_quality_precedence_is_bad_then_stale_then_suspicious() -> None:
+    assert _quality_at(4, quality="bad")["level"] == "bad"
+    assert _quality_at(4, quality="suspicious")["level"] == "suspicious"
+    # A bad quote is also stale here: the vendor flag is the stronger statement,
+    # and the age still rides along in age_days.
+    bad_and_stale = _quality_at(40, quality="bad")
+    assert bad_and_stale["level"] == "bad"
+    assert bad_and_stale["reason"] == "quote_quality_bad"
+    assert bad_and_stale["age_days"] == 40
+    assert _quality_at(40, quality="suspicious")["level"] == "stale"
+
+
+def test_price_quality_passes_the_vendor_marks_through_untouched() -> None:
+    suspicious = _quality_at(1, quality="suspicious", confidence="low")
+
+    assert suspicious["quote_quality_status"] == "suspicious"
+    assert suspicious["quote_confidence"] == "low"
+    assert suspicious["note"] == "上游将 2026-10-26 的报价标记为可疑（confidence=low）。"
+
+    bad = _quality_at(1, quality="bad", confidence=None)
+    assert bad["quote_confidence"] is None
+    # The confidence clause is dropped rather than rendering "confidence=None".
+    assert bad["note"] == "上游将 2026-10-26 的报价标记为异常。"
+
+
+def test_price_quality_is_missing_without_a_usable_quote() -> None:
+    no_row = _price_quality(None, _AS_OF_DAY)
+    assert no_row["level"] == "missing"
+    assert no_row["reason"] == "no_price"
+    assert no_row["age_days"] is None
+    assert no_row["quote_quality_status"] is None
+    assert no_row["note"] == "无可用报价，估值按缺失处理。"
+
+    # A row that exists but carries neither price nor market cap is no usable
+    # quote either -- and its own marks still ride through, since they are facts.
+    empty = _price_quality(
+        _quote("2026-10-26", close=None, market_cap=None, quality="suspicious"),
+        _AS_OF_DAY,
+    )
+    assert empty["level"] == "missing"
+    assert empty["age_days"] is None
+    assert empty["quote_quality_status"] == "suspicious"
+
+
+def test_price_quality_is_a_pure_function_of_as_of_and_the_quote() -> None:
+    """No now(): the same inputs must keep producing the same block."""
+
+    quote = _quote("2026-09-01", market_cap="2000000.0000")
+    first = _price_quality(quote, _AS_OF_DAY)
+    second = _price_quality(quote, _AS_OF_DAY)
+
+    assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
+    assert first["age_days"] == 56
+
+
+def test_price_quality_flags_a_bad_quote_without_moving_any_number() -> None:
+    """Iron law 2: the flag annotates, it never nulls or rewrites a value."""
+
+    _service, clean = _compose_values("reference")
+    _service, flagged = _compose_values(
+        "reference",
+        quote=_quote(
+            "2026-01-05",
+            market_cap="2000000.0000",
+            pe_ttm="15.0000",
+            pb="1.5000",
+            quality="bad",
+        ),
+    )
+
+    assert flagged["metrics_json"]["valuation"]["price_quality"]["level"] == "bad"
+    without_flag = {
+        name: json.dumps(
+            {
+                key: value
+                for key, value in payload["metrics_json"].items()
+                if key != "valuation"
+            }
+            | {
+                "valuation": {
+                    key: value
+                    for key, value in payload["metrics_json"]["valuation"].items()
+                    if key != "price_quality"
+                }
+            },
+            sort_keys=True,
+        )
+        for name, payload in (("clean", clean), ("flagged", flagged))
+    }
+    assert without_flag["clean"] == without_flag["flagged"]
+
+
+def test_compose_writes_one_shared_price_quality_for_both_bases() -> None:
+    _service, values = _compose_values("snapshot")
+
+    valuation = values["metrics_json"]["valuation"]
+    quality = valuation["price_quality"]
+    assert quality["level"] == "stale"
+    assert quality["age_days"] == 295
+    # Shared, not per basis: neither basis carries its own copy.
+    assert all("price_quality" not in basis for basis in valuation["bases"].values())
+    assert quality["quote_quality_status"] == "normal"
+
+    _service._check_row(values, fiscal_years=5, day=_AS_OF_DAY)
