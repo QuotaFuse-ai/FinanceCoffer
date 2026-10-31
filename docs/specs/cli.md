@@ -1,6 +1,6 @@
 # FinanceCoffer CLI 命令清单（`fcoffer`）
 
-版本：v0.17（设计稿）
+版本：v0.18（设计稿）
 原则：CLI 与 MCP 共用同一服务层与返回信封；stdout 只输出数据，日志/进度全部走 stderr。
 变更记录：v0.2 新增第 6 节错误码表（含 `E_NOT_FOUND`、`E_RATE_LIMITED`），`config show` 明确密钥始终脱敏。
 v0.3 实装 `ods` 四个子命令（`--etl-status` 取值改为 DDL 口径 `pending|done|failed`），明确 `--raw` 与 `replay` 语义。
@@ -18,6 +18,7 @@ v0.14 命令树总表修正：§2 的 `vector index` 展开为实装的 `vector 
 v0.15 `query structured` 与 MCP 工具新增可选 `valuation_basis`（`snapshot|reference`），缺省取宽表 `default_basis`；口径定义见 `docs/specs/dws-metrics.md` §4.4.5–4.4.6。
 v0.16 构建期默认口径可配置：新增 `FC_METRICS_PROFILE`（`snapshot|reference`，默认 `snapshot`，非法值加载即报 `E_CONFIG`），`dws build` / `dws rebuild` 新增 `--valuation-basis`（优先级 命令行 > `FC_METRICS_PROFILE` > `snapshot`），构建时写入 `metrics_json.valuation.default_basis`，顶层 `pe` / `pb` 等扁平键改为该口径的镜像。`query structured` 的 `--valuation-basis` 仍是**单次读取覆盖**，两者语义不同（§3.9、§3.12）。同时补回显回归口径：REST 与 MCP 一致、未构建口径 `basis_not_built` 不回落、无 `default_basis` 的历史行折叠为 `snapshot`。前端落地在 LadderStock 个股深挖页 / 研究报告页（该端当前尚无 FinanceCoffer 适配器，也没有 PE/PB/ROE 展示位）。
 v0.17 §3.9 补 DWS 市场闸：`dws build` / `dws show` 的符号参数不再是「A 股代码或美股 ticker」，只构建 6 位数字 A 股代码；非 A 股符号进 `skipped` + 原因码 `non_a_share_symbol`（不是失败），`dws show` 对闸前的遗留非 A 股行输出 `valuation.available=false`。口径见 `docs/specs/dws-metrics.md` §4.1 / §4.1.1。
+v0.18 凭据改为引用：`FC_DB_URL` / `FC_MINIO_ACCESS_KEY` / `FC_MINIO_SECRET_KEY` / `FC_MCP_TOKEN` / `FC_EMBEDDING_API_KEY` 可写成 `keyring:<service>/<account>`、`file:<path>`、`env:<VAR>`，加载时在 `Config` 校验前解析（§3.1、`docs/specs/financecoffer.md` §8）；新增 `config secret set|list|delete` 三个子命令；无法解析的引用一律 `E_CONFIG` 退出码 3，绝不静默回退为空值；`serve api --workers N` 在 fork 前导出的是**引用本身**，明文不再进入 worker 进程环境（修订 v0.9 记录的取舍）。
 
 ## 1. 全局参数
 
@@ -72,7 +73,7 @@ fcoffer [GLOBAL OPTIONS] COMMAND [ARGS]...
 | --- | --- | --- | --- |
 | 初始化 | `init` | 工程落地 | P0 |
 | 自检 | `doctor` | 参考 TickHub | P0 |
-| 配置 | `config show` / `config check` | 环境变量章节 | P0 |
+| 配置 | `config show` / `config check` / `config secret set` / `config secret list` / `config secret delete` | 环境变量章节 | P0 |
 | 数据库 | `db migrate` / `db status` / `db partitions create` / `db partitions list` | 3.1 分区 | P0 |
 | 服务 | `serve api` / `serve admin` / `start-all` | 部署形态 | P0 |
 | MCP | `mcp stdio` / `mcp http` / `mcp tools` | 4.2 | P0 |
@@ -100,12 +101,18 @@ fcoffer init [--db-url URL] [--with-extensions] [--dry-run]
 fcoffer doctor [--check db,minio,redis,embedding,mcp] [--output json]
 fcoffer config show [--json] [--redact]
 fcoffer config check
+fcoffer config secret set <field> [--store keyring|file] [--service NAME] [--account NAME] [--file PATH] [--dpapi]
+fcoffer config secret list
+fcoffer config secret delete <field> --confirm [--service NAME] [--account NAME] [--file PATH]
 ```
 
 - `init`：创建 schema、扩展（`vector`）、基础表、分区与 HNSW 索引；可重复执行（幂等）。
 - `doctor`：逐项探测 PG 版本/扩展、MinIO bucket、Redis Stream、embedding 维度、MCP 协议帧。
 - `config show`：输出生效配置，密钥**始终**脱敏（DSN 密码、MinIO AccessKey/SecretKey、embedding key、MCP token 均显示为 `***`）；`--json` 走统一信封，`--redact` 仅为兼容保留。
 - `config check`：校验配置完整性，报告缺失项（不打印任何密钥）。
+- `config secret set`：把凭据**存进**凭据库，只回显引用串。密钥来自交互式隐藏输入（两次确认），不进 argv、不进 shell history、不回显。`--store keyring` 用 `<service>/<account>`（缺省 `financecoffer/<field>`）；`--store file` 必须给 `--file`，`--dpapi` 仅 Windows，把文件内容用 DPAPI 封成 `dpapi:v1:<base64>`，只对本机本用户可解。写完还要把 `FC_<字段>=<引用串>` 写进 `.env` 或进程环境——命令不会替你改配置。
+- `config secret list`：列出五个凭据字段当前配置的**引用与目标**（`type` = `keyring|file|env|literal|invalid`、`target`、`status` = `ok|unresolved|error`），永不输出值；解析失败的引用在这里仍然是可见的一行，而不是让命令崩掉。
+- `config secret delete`：删除引用指向的凭据材料（文件或 keyring 条目），必须显式 `--confirm`，否则退出码 2；引用指向明文值时拒绝执行（明文不属于任何一个库，只能由配置来源自己改）。
 
 ### 3.2 数据库
 
@@ -128,10 +135,10 @@ fcoffer start-all --host 127.0.0.1 --port 8100 [--consumer redis] [--no-etl]
 - `start-all`：主进程 API，子进程 ETL 消费；子进程崩溃重启策略参考 TickHub（5 分钟 3 次后停止并告警，API 继续服务）。
 - 默认只监听回环地址；HTTP 暴露到非回环地址必须配置 token 与 Host 白名单。
 - `serve api --workers N` 的配置来源：`N = 1` 时在主进程内构建 app，直接使用 CLI 已解析的配置；`N > 1` 时 uvicorn 只能按 import string 拉起 worker，每个 worker 会重新执行 `create_app()`，
-  该入口默认只读**进程环境**、不读仓库 `.env`。为此 CLI 在 fork 前把**已解析的完整配置**（内置默认值 → 仓库 `.env` → 进程环境 → `--db-url` 的最终结果）
-  导出为 `FC_*` 进程环境变量，worker 继承后与 `--workers 1` 的配置逐项一致，不依赖 worker 侧重新发现 `.env`。
-- 上述导出的取舍：DSN（含密码）、MinIO AccessKey/SecretKey、MCP token 因此多一个落点——本 CLI 自己 fork 的 worker 进程环境。
-  这与 `--db-url` 既有的暴露同级，不是日志或输出泄漏；`config show` / `config check` 的脱敏不受影响。`serve admin` 与 `start-all` 均在主进程内构建 app，不导出任何 `FC_*`。
+  该入口默认只读**进程环境**、不读仓库 `.env`。为此 CLI 在 fork 前把已解析的非凭据配置导出为 `FC_*` 进程环境变量，worker 继承后与 `--workers 1` 的配置逐项一致，不依赖 worker 侧重新发现 `.env`。
+- 五个凭据字段（`FC_DB_URL`、`FC_MINIO_ACCESS_KEY`、`FC_MINIO_SECRET_KEY`、`FC_MCP_TOKEN`、`FC_EMBEDDING_API_KEY`）导出的是**配置里写的那串引用**，不是解析后的明文：worker 自己解析一次。因此用引用部署时，明文不出现在主进程的环境里，也就不出现在它 fork 的每个 worker 的环境块、`/proc/<pid>/environ` 或崩溃转储里。
+  写成明文的凭据只能按明文导出——CLI 无法凭空造出一个引用，所以旧部署不会因为这条改动而变坏，但要跨 fork 保护密钥就必须改用引用。这条取舍由 §3.1 的 `config secret` 三个命令与 `docs/specs/financecoffer.md` §8 的引用语法承担。
+- `serve admin` 与 `start-all` 均在主进程内构建 app，不导出任何 `FC_*`。
 - `serve api` 在构建 app 之前会按 `FC_MINIO_AUTOSTART` 做一次 §3.16 的 `ensure`：开关为 `false`（默认）时完全跳过；为 `true` 时尽力把本地存储带起来，失败只写一条 WARNING 并继续提供服务（归档按既有的「写失败记账」降级）。这一步在 fork worker 之前执行，多 worker 也只做一次。
 
 ### 3.4 MCP

@@ -20,6 +20,7 @@ that used to fail.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -80,9 +81,11 @@ def _reachable(url: str) -> bool:
         return False
 
 
-def _child_environment() -> dict[str, str]:
+def _child_environment(extra_path: Path | None = None) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if not key.startswith("FC_")}
-    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(SRC), env.get("PYTHONPATH", "")]))
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(extra_path) if extra_path else "", str(SRC), env.get("PYTHONPATH", "")])
+    )
     env["PYTHONUNBUFFERED"] = "1"
     return env
 
@@ -235,5 +238,146 @@ def test_workers_inherit_the_dotenv_configuration(
         # mean the worker never received a DSN at all.
         assert error.get("code") != "E_CONFIG", (status, body)
         assert status == 200 or error.get("code") == "E_NOT_FOUND", (status, body)
+    finally:
+        _stop(process)
+
+
+# -- QUOT-195: a fork carries references, never secrets ----------------------
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+_SITE_CUSTOMIZE = '''"""Record a digest of this process's ``FC_*`` environment, then step aside.
+
+``sitecustomize`` is imported by every interpreter whose ``PYTHONPATH`` contains the
+directory this test puts it in: the CLI parent and each uvicorn worker it spawns.
+Only digests are recorded, because the claim under test is that a credential is
+*absent* from a child environment -- writing the values out to prove they are
+absent would itself be the leak.
+"""
+
+import hashlib
+import json
+import os
+from pathlib import Path
+
+target = os.environ.get("ENV_DIGEST_DIR")
+if target:
+    directory = Path(target)
+    directory.mkdir(parents=True, exist_ok=True)
+    table = {
+        name: hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
+        for name, value in os.environ.items()
+        if name.startswith("FC_")
+    }
+    (directory / f"env-{os.getpid()}.json").write_text(
+        json.dumps({"pid": os.getpid(), "ppid": os.getppid(), "env": table}, sort_keys=True),
+        encoding="utf-8",
+    )
+'''
+
+
+def _install_env_dumper(support: Path, dump_dir: Path) -> None:
+    """Put a ``sitecustomize`` on the child ``PYTHONPATH`` that digests ``FC_*``."""
+
+    support.mkdir(parents=True, exist_ok=True)
+    (support / "sitecustomize.py").write_text(_SITE_CUSTOMIZE, encoding="utf-8")
+    dump_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _move_into_files(pairs: dict[str, str], holder: Path) -> dict[str, tuple[str, str]]:
+    """Rewrite each configured credential as a ``file:`` reference.
+
+    Returns ``{env name: (reference, plaintext)}`` for the fields that moved, which
+    is what the child-environment assertions are made of. ``file:`` is the scheme a
+    forked child can resolve on its own: ``keyring:`` would be read from this
+    machine's credential store, which no test may do, and ``env:`` keeps the secret
+    in the environment -- the exact thing being proven absent.
+    """
+
+    moved: dict[str, tuple[str, str]] = {}
+    for name in ("FC_DB_URL", "FC_MINIO_ACCESS_KEY", "FC_MINIO_SECRET_KEY"):
+        literal = pairs.get(name)
+        if not literal:
+            continue
+        path = holder / f"{name.removeprefix('FC_').lower()}.txt"
+        path.write_text(literal, encoding="utf-8")
+        reference = f"file:{path.as_posix()}"
+        pairs[name] = reference
+        moved[name] = (reference, literal)
+    return moved
+
+
+def test_workers_inherit_references_and_no_plaintext(
+    migrated_warehouse: str, tmp_path: Path
+) -> None:
+    """Three things must hold at once, and each is the control for the others.
+
+    The workers serve with a healthy database check, so a reference reached them and
+    resolved. Their recorded environment carries the *reference* digest, so the fork
+    published what the operator wrote. And no recorded environment carries a
+    plaintext digest, so the secret itself never crossed -- the whole point of
+    QUOT-195.
+
+    The aggregate ``/health`` status is deliberately not asserted: an embedding
+    service this machine is not running would degrade it for reasons that have
+    nothing to do with credential transport, and this case is about transport.
+    """
+
+    pairs = _dotenv_pairs()
+    pairs["FC_DB_URL"] = migrated_warehouse
+    holder = tmp_path / "secrets"
+    holder.mkdir()
+    moved = _move_into_files(pairs, holder)
+    assert moved, "no credential is configured locally, so there is nothing to prove here"
+
+    dump_dir = tmp_path / "envdumps"
+    support = tmp_path / "support"
+    _install_env_dumper(support, dump_dir)
+
+    (tmp_path / ".env").write_text(
+        "".join(f"{key}={value}\n" for key, value in pairs.items()), encoding="utf-8"
+    )
+
+    child_env = _child_environment(support)
+    child_env["ENV_DIGEST_DIR"] = dump_dir.as_posix()
+    assert not any(key.startswith("FC_") for key in child_env)
+
+    port = _free_port()
+    log_path = tmp_path / "serve.log"
+    process = _start(port, 2, child_env, tmp_path, log_path)
+    try:
+        data = _wait_until_serving(port, process, log_path)
+        checks = data.get("checks") or {}
+        assert (checks.get("database") or {}).get("status") == "ok", checks
+
+        status, body = _get(
+            f"http://127.0.0.1:{port}/v1/structured/{SYMBOL}", timeout=QUERY_TIMEOUT
+        )
+        assert (body.get("error") or {}).get("code") != "E_CONFIG", (status, body)
+
+        dumps = [
+            json.loads(path.read_text(encoding="utf-8")) for path in dump_dir.glob("env-*.json")
+        ]
+        assert dumps, "no process recorded its environment; the probe never ran"
+
+        plaintexts = {_digest(value) for _, value in moved.values()}
+        for record in dumps:
+            leaked = sorted(set(record["env"].values()) & plaintexts)
+            assert not leaked, f"pid {record['pid']} carries a plaintext credential"
+
+        carrying = [
+            record
+            for record in dumps
+            if all(
+                record["env"].get(name) == _digest(reference)
+                for name, (reference, _) in moved.items()
+            )
+        ]
+        # Two workers, each with the reference in its own environment block. The
+        # parent may appear too (it exported them), so this is a floor, not a count.
+        assert len(carrying) >= 2, f"{len(carrying)} of {len(dumps)} processes carry the references"
     finally:
         _stop(process)

@@ -344,6 +344,42 @@ CREATE INDEX idx_ann_chunk_embedding
 - **凭据字段拒绝模板占位符**（`FC_EMBEDDING_API_KEY`、`FC_MINIO_ACCESS_KEY`、`FC_MINIO_SECRET_KEY`、`FC_MCP_TOKEN`）：值精确等于 `CHANGE_ME` 时拒绝。部署模板现在直接留空，这条校验保留为旧模板文件的兜底。空值与缺省值表示「未启用」（loopback-only 部署不设 MCP token、`local` provider 不用 API key），照常加载，且 `fcoffer config show` 中保持为空而非掩码。照抄模板而未填写的副本仍然无法启动：`compose.yaml` 对必填项用 `${VAR:?}` 拒绝空值，`FC_DB_URL` 为空时应用侧报 `E_CONFIG`（not configured）。
 - **DSN 项的 scheme 校验**（`FC_DB_URL` 须为 `postgresql://` 或 `postgresql+psycopg://`，`FC_REDIS_URL` 须为 `redis://` 或 `rediss://`）。
 
+### 8.1 凭据引用（不落进程环境的密钥）
+
+五个字段的值可以写成引用而不是明文：`FC_DB_URL`、`FC_MINIO_ACCESS_KEY`、`FC_MINIO_SECRET_KEY`、`FC_MCP_TOKEN`、`FC_EMBEDDING_API_KEY`。
+
+| 语法 | 材料放在哪 | 说明 |
+| --- | --- | --- |
+| `keyring:<service>/<account>` | 操作系统凭据库 | Windows = 凭据管理器（generic credential，目标名 `<service>/<account>`）；macOS = Keychain、Linux = Secret Service，走可选的 `keyring` 包 |
+| `file:<path>` | 一个文件 | 内容首行即凭据（尾部换行剥离）；Windows 上可写成 `dpapi:v1:<base64>` 的 DPAPI 封装，只对本机本用户可解 |
+| `env:<VAR>` | 另一个环境变量 | 显式的向后兼容退路：值仍然在进程环境里，只是不在**这个字段**里 |
+
+解析口径：
+
+- **引用与明文的区分只看前缀**。`keyring:` / `file:` / `env:` 三个 scheme 之外一律当明文，所以 `postgresql://user:pass@host/db` 不会被误解析——这是必须的，DSN 自己就带冒号。大小写敏感（`FILE:` 是明文的一部分）。
+- **解析发生在 `load_config()` 内、`Config` 校验之前**（`config/loader.py`）。因此校验、DSN scheme 检查、占位符检查看到的都是解析后的值，`Config` 里仍然是 `SecretStr`，`fcoffer config show` / 日志 / `/health` 的脱敏口径完全不变。
+- **引用解析失败是硬失败**：文件不存在或不可读或为空、DPAPI 解不开、keyring 条目不存在、`env:` 指向的变量未设置、引用语法本身写错，一律 `E_CONFIG`（退出码 3），消息点名是哪个字段、哪种引用、缺什么、下一步做什么；绝不静默退化成空值——空 DSN 会连出一个「配置正常但连不上」的服务，比启动失败难查得多。
+- **配置的读取顺序不变**（内置默认值 → 仓库 `.env` → 进程环境 → `--db-url`），引用解析发生在该顺序**之后**：先决定哪个值生效，再决定它是不是引用。`env:` 引用的变量在同一份环境映射里查找，所以测试与部署的桩环境是权威的。
+- **跨 fork 的是引用**：`serve api --workers N` 导出给 worker 的是这串引用（见 `docs/specs/cli.md` §3.3），每个 worker 自己解析一次，明文不进任何进程的环境块。写成明文的凭据仍按明文导出，行为与旧版一致。
+
+存引用指向的材料用 `fcoffer config secret set|list|delete`（`docs/specs/cli.md` §3.1）；密钥从交互式隐藏输入读入，不经 argv，也不回显。
+
+各平台的 keyring 依赖：
+
+- **Windows：无额外依赖**。`ctypes` 直接调 `advapi32` 的 `CredReadW/CredWriteW/CredDeleteW/CredEnumerateW` 与 `crypt32` 的 `CryptProtectData/CryptUnprotectData`（实现见 `core/wincred.py`）。选它的理由与备选方案记录在 `docs/decisions/DEC-0031-credential-references-resolved-at-load.md`。
+- **macOS / Linux：需要 `keyring` 包**（`pip install 'financecoffer[keyring]'`）。未安装时不是静默降级，而是一条 `E_CONFIG`：提示装该 extra，或改用它本来就能读的 `file:` / `env:` 引用。
+- `file:` 与 `env:` 在任何平台都零依赖；DPAPI 封装只在 Windows 可解，非 Windows 读到 DPAPI 文件是明确的硬失败。
+
+`.env` 里放引用示例（值列写引用而不是密钥，模板才能进仓库）：
+
+```bash
+FC_DB_URL=file:/etc/financecoffer/db_url.txt
+FC_MINIO_ACCESS_KEY=keyring:financecoffer/minio_access_key
+FC_MINIO_SECRET_KEY=file:/etc/financecoffer/minio_secret.txt
+FC_MCP_TOKEN=keyring:financecoffer/mcp_token
+FC_EMBEDDING_API_KEY=env:FC_EMBEDDING_KEY
+```
+
 完整变量清单见 `docs/specs/naming.md`。
 
 ## 9. 部署

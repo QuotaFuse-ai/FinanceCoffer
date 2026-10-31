@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 import typer
 
+from financecoffer.cli.commands import config_secret
 from financecoffer.cli.options import from_context
 from financecoffer.cli.output import emit_failure, emit_success
 from financecoffer.cli.placeholder import add_group
@@ -529,6 +530,8 @@ def register(app: typer.Typer) -> None:
             "warnings": [f"{item['env']} is {item['reason']}" for item in missing],
         }
         emit_success(options, data, meta=Meta(source="config"))
+
+    config_secret.register(config)
 
 
 __all__ = ["ProbeContext", "register"]

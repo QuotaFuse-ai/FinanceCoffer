@@ -721,8 +721,13 @@ def test_serve_api_workers_export_the_resolved_configuration(monkeypatch) -> Non
 
     ``--workers N`` hands uvicorn an import string, so each worker re-runs
     ``create_app()`` and resolves from the process environment alone. The
-    resolved configuration -- including ``.env`` values and ``--db-url``, and
-    including credentials -- is published before the fork.
+    resolved configuration -- including ``.env`` values and ``--db-url`` -- is
+    published before the fork.
+
+    QUOT-195 changes what a *credential* is published as: the reference the
+    operator wrote, never the secret it resolves to. The worker resolves for
+    itself, so the plaintext never enters an environment block a forked child
+    inherits and someone else can read.
     """
 
     import os
@@ -730,6 +735,7 @@ def test_serve_api_workers_export_the_resolved_configuration(monkeypatch) -> Non
     import uvicorn
 
     from financecoffer.cli.commands import serve as serve_module
+    from financecoffer.config.loader import LoadedConfig
 
     captured: dict[str, object] = {}
 
@@ -740,8 +746,14 @@ def test_serve_api_workers_export_the_resolved_configuration(monkeypatch) -> Non
     monkeypatch.setattr(uvicorn, "run", fake_run)
     monkeypatch.setattr(
         serve_module,
-        "load_cli_config",
-        lambda **_: _config(minio_secret_key="s3cr3t-key", rate_limit_per_minute=7),
+        "load_cli_config_detailed",
+        lambda **_: LoadedConfig(
+            config=_config(minio_secret_key="s3cr3t-key", rate_limit_per_minute=7),
+            sources={
+                "db_url": "keyring:financecoffer/db_url",
+                "minio_secret_key": "file:secrets/minio.txt",
+            },
+        ),
     )
     isolated = {key: value for key, value in os.environ.items() if not key.startswith("FC_")}
     monkeypatch.setattr(os, "environ", isolated)
@@ -751,12 +763,14 @@ def test_serve_api_workers_export_the_resolved_configuration(monkeypatch) -> Non
     assert result.exit_code == 0
     assert captured["kwargs"]["workers"] == 2
     assert captured["kwargs"]["factory"] is True
-    assert isolated["FC_DB_URL"] == _DSN
-    assert isolated["FC_MINIO_SECRET_KEY"] == "s3cr3t-key"
+    assert isolated["FC_DB_URL"] == "keyring:financecoffer/db_url"
+    assert isolated["FC_MINIO_SECRET_KEY"] == "file:secrets/minio.txt"
     assert isolated["FC_RATE_LIMIT_PER_MINUTE"] == "7"
     # Unset values stay unset instead of being published as empty strings.
     assert "FC_MCP_TOKEN" not in isolated
     assert "FC_ETL_CONSUMER_NAME" not in isolated
+    # The resolved plaintext of a referenced credential is never published.
+    assert "s3cr3t-key" not in "".join(f"{k}={v}" for k, v in isolated.items())
 
 
 def test_serve_api_single_worker_passes_the_built_app_and_exports_nothing(monkeypatch) -> None:
@@ -767,6 +781,7 @@ def test_serve_api_single_worker_passes_the_built_app_and_exports_nothing(monkey
     import uvicorn
 
     from financecoffer.cli.commands import serve as serve_module
+    from financecoffer.config.loader import LoadedConfig
 
     captured: dict[str, object] = {}
 
@@ -775,7 +790,11 @@ def test_serve_api_single_worker_passes_the_built_app_and_exports_nothing(monkey
         captured["kwargs"] = kwargs
 
     monkeypatch.setattr(uvicorn, "run", fake_run)
-    monkeypatch.setattr(serve_module, "load_cli_config", lambda **_: _config())
+    monkeypatch.setattr(
+        serve_module,
+        "load_cli_config_detailed",
+        lambda **_: LoadedConfig(config=_config(), sources={"db_url": _DSN}),
+    )
     isolated = {key: value for key, value in os.environ.items() if not key.startswith("FC_")}
     monkeypatch.setattr(os, "environ", isolated)
 
@@ -787,19 +806,52 @@ def test_serve_api_single_worker_passes_the_built_app_and_exports_nothing(monkey
     assert "FC_DB_URL" not in isolated
 
 
-def test_config_environment_reports_names_only() -> None:
-    """The helper never returns or logs a value alongside a name."""
+def test_config_environment_publishes_references_not_plaintext() -> None:
+    """A credential field is exported as the reference the operator wrote (QUOT-195).
+
+    Everything else is exported as its resolved value, because a worker needs the
+    value; a credential needs only a pointer it can resolve itself.
+    """
 
     from financecoffer.cli.commands import serve as serve_module
 
     exported = serve_module._config_environment(
-        _config(minio_secret_key="s3cr3t-key", embedding_api_key="emb-key")
+        _config(
+            minio_secret_key="s3cr3t-key",
+            embedding_api_key="emb-key",
+            mcp_token="literal-token",
+        ),
+        {
+            "db_url": "keyring:financecoffer/db_url",
+            "minio_secret_key": "file:secrets/minio.txt",
+            "embedding_api_key": "env:FC_EMB_KEY",
+            "mcp_token": "literal-token",
+        },
     )
 
-    assert exported["FC_DB_URL"] == _DSN
-    assert exported["FC_MINIO_SECRET_KEY"] == "s3cr3t-key"
-    assert exported["FC_EMBEDDING_API_KEY"] == "emb-key"
+    assert exported["FC_DB_URL"] == "keyring:financecoffer/db_url"
+    assert exported["FC_MINIO_SECRET_KEY"] == "file:secrets/minio.txt"
+    assert exported["FC_EMBEDDING_API_KEY"] == "env:FC_EMB_KEY"
+    # A literal credential stays a literal: nothing here can invent a reference.
+    assert exported["FC_MCP_TOKEN"] == "literal-token"
     assert all(name.startswith("FC_") for name in exported)
+
+
+def test_config_environment_omits_a_credential_with_no_source() -> None:
+    """A credential field the loader never saw is left unset, not published empty.
+
+    Every credential field defaults to ``None``, so a worker that inherits nothing
+    reaches the same conclusion the CLI did -- and an ``FC_X=`` in the environment
+    would mean "unset" to the loader anyway, just noisily.
+    """
+
+    from financecoffer.cli.commands import serve as serve_module
+
+    exported = serve_module._config_environment(_config(), {})
+
+    assert "FC_DB_URL" not in exported
+    assert "FC_MINIO_SECRET_KEY" not in exported
+    assert "FC_MCP_TOKEN" not in exported
 
 
 def test_start_all_rejects_an_unknown_consumer(monkeypatch) -> None:

@@ -149,9 +149,7 @@ class Config(BaseModel):
             return None
         if value.get_secret_value() != PLACEHOLDER_SECRET:
             return value
-        raise ValueError(
-            f"FC_{info.field_name.upper()} must not keep the CHANGE_ME placeholder"
-        )
+        raise ValueError(f"FC_{info.field_name.upper()} must not keep the CHANGE_ME placeholder")
 
     @field_validator("embedding_url")
     @classmethod
@@ -193,3 +191,15 @@ class Config(BaseModel):
             if data.get(name):
                 data[name] = redact_text(str(data[name]))
         return data
+
+    def __repr_args__(self) -> Any:
+        """Repr and str carry the redacted view, never a DSN password.
+
+        ``repr()`` is what an unhandled exception prints for every object in the
+        traceback, and ``db_url`` is a plain ``str`` -- so without this the
+        credential would reach a log or a crash report even though
+        ``config show`` masks it.
+        """
+
+        shown = self.redacted_dict()
+        return [(name, shown.get(name)) for name in type(self).model_fields]
