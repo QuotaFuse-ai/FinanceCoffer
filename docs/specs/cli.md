@@ -13,7 +13,7 @@ v0.9 §3.3 写明 `serve api --workers N`（N>1）时的配置来源：fork 前�
 v0.10 §3.11 `archive run` 新增可重复的 `--symbol` / `--table` 作用域（与时间、字节窗口取交集）；`archive run` / `archive restore` 非 `--dry-run` 时必须显式 `--yes`，否则退出码 2 并给出候选行数；`--dry-run` 保证无副作用；注明 `archive prune` 尚未实现。
 v0.11 新增 §3.16 `minio` 命令组（`status|ensure|start|stop`）与 `FC_MINIO_AUTOSTART` 开关：默认 `false`，打开后 `serve api` 在 fork worker 前尽力确保本地存储可用，失败只告警不阻断；路径项无默认值、只在启动时报错；`start` 拒绝非回环端点。
 v0.12 新增 §1.1 输出编码约定：CLI 入口强制 stdout/stderr 为 UTF-8，修复 Windows 重定向下 `--output json` 落盘 GBK 的问题；§3.9 补充指向 `docs/specs/dws-metrics.md` 的口径交叉引用。
-v0.13 数值区间选项第二批（8 项）改为命令内判界并走 `E_INVALID_ARGUMENT` 信封：全局 `--timeout` / `--retries`、`vector embed --batch-size`、`etl consume --batch-size|--block-ms|--claim-idle-ms`、`etl replay --limit`、`db migrate --ahead`。其中 `--batch-size` 上限由 64 统一为客户端上限 32（33–64 从静默夹取改为参数错误）；`etl replay --limit` 保留 1000 条夹取；`db migrate --ahead` 的负值校验前移到迁移执行前。语义判定见 `docs/decisions/DEC-0030`。
+v0.13 数值区间选项第二批（8 项）改为命令内判界并走 `E_INVALID_ARGUMENT` 信封：全局 `--timeout` / `--retries`、`vector embed --batch-size`、`etl consume --batch-size|--block-ms|--claim-idle-ms`、`etl replay --limit`、`db migrate --ahead`。其中 `--batch-size` 上限由 64 统一为客户端上限 32（33–64 从静默夹取改为参数错误）；`etl replay --limit` 保留 1000 条夹取；`db migrate --ahead` 的负值校验前移到迁移执行前。语义判定见下文。
 v0.14 命令树总表修正：§2 的 `vector index` 展开为实装的 `vector index create|status|drop`（与 §3.10 对齐）；删除不存在的 `fcoffer dwd announcement list|show`（`dwd` 只有 `show|versions|backfill|verify`，公告元数据当前无 CLI 查询入口）。
 v0.15 `query structured` 与 MCP 工具新增可选 `valuation_basis`（`snapshot|reference`），缺省取宽表 `default_basis`；口径定义见 `docs/specs/dws-metrics.md` §4.4.5–4.4.6。
 v0.16 构建期默认口径可配置：新增 `FC_METRICS_PROFILE`（`snapshot|reference`，默认 `snapshot`，非法值加载即报 `E_CONFIG`），`dws build` / `dws rebuild` 新增 `--valuation-basis`（优先级 命令行 > `FC_METRICS_PROFILE` > `snapshot`），构建时写入 `metrics_json.valuation.default_basis`，顶层 `pe` / `pb` 等扁平键改为该口径的镜像。`query structured` 的 `--valuation-basis` 仍是**单次读取覆盖**，两者语义不同（§3.9、§3.12）。同时补回显回归口径：REST 与 MCP 一致、未构建口径 `basis_not_built` 不回落、无 `default_basis` 的历史行折叠为 `snapshot`。前端落地在 LadderStock 个股深挖页 / 研究报告页（该端当前尚无 FinanceCoffer 适配器，也没有 PE/PB/ROE 展示位）。
@@ -83,7 +83,7 @@ fcoffer [GLOBAL OPTIONS] COMMAND [ARGS]...
 | DWS | `dws build` / `dws show` / `dws rebuild` | 2.3 | P0 |
 | 向量 | `vector chunk` / `vector embed` / `vector index create\|status\|drop` / `vector search` / `vector reindex` / `vector stats` | 2.4、3.4、3.5 | P0 |
 | 冷热 | `archive run` / `archive status` / `archive restore` / `archive verify` | 3.3、7 | P1 |
-| 对象存储 | `minio status` / `minio ensure` / `minio start` / `minio stop` | 3.3、DEC-0014 | P1 |
+| 对象存储 | `minio status` / `minio ensure` / `minio start` / `minio stop` | 3.3 | P1 |
 | 查询 | `query structured` / `query risk` / `search announcements` | 4.2 | P0 |
 | 通用工具 | `tool list` / `tool call` | 参考 TickHub | P1 |
 | 监控 | `metrics` / `health` | 5 | P0 |
@@ -201,7 +201,7 @@ fcoffer ods replay <id>|--all-failed [--dry-run]
   只有 `raw_file_path` 的历史行没有原文，退化为 `raw_json` 的紧凑 JSON。
 - `stats` 只做计数，不做业务汇总。
 - `replay` 只把 `ops.etl_event_log` 中对应事件重置为 `received` 之后**不向 Redis 流重新发布**，需由上游重新投递、消费侧用 `--force` 处理；仍然**不修改 ODS 行**；
-  `--all-failed` 选取的是「事件日志状态为 `failed` / `dlq`」的 ODS 行（ODS 的 `etl_status` 落库后不再回填，DEC-0021）；
+ `--all-failed` 选取的是「事件日志状态为 `failed` / `dlq`」的 ODS 行（ODS 的 `etl_status` 落库后不再回填）；
   `--dry-run` 只打印 manifest（`id` / `event_id` / `data_type` / `symbol` / `source` / `fetch_time` / `etl_status`），零写入。
 
 ### 3.8 DWD
@@ -375,7 +375,7 @@ fcoffer health [--check db,minio,redis,etl] [--output json]
 | `fc_vector_search_seconds` | Histogram | P95 超阈值 |
 | `fc_archive_job_total{status}` | Counter | failed 增长 |
 
-`/metrics` 只提供 Prometheus 文本格式，每个家族注册即输出（无数据为 0）；`--format json` 由 CLI 在客户端解析文本后输出，见 `financecoffer.md` §7 与 DEC-0022。
+`/metrics` 只提供 Prometheus 文本格式，每个家族注册即输出（无数据为 0）；`--format json` 由 CLI 在客户端解析文本后输出，见 `financecoffer.md` §7。
 
 连接池水位指标 `fc_pg_pool_in_use` **不适用**：查询层用 psycopg 直连、无连接池可采样，本产品不暴露该家族（原因见 `financecoffer.md` §7）。
 
@@ -396,7 +396,7 @@ fcoffer minio start  [--wait 20]
 fcoffer minio stop   [--wait 5]
 ```
 
-- **只服务于本地进程**：管理的是 §3.11 归档所用的那台本机 MinIO（DEC-0014）。远端 S3、容器内的存储由各自的运维手段负责，不走这组命令。
+- **只服务于本地进程**：管理的是 §3.11 归档所用的那台本机 MinIO。远端 S3、容器内的存储由各自的运维手段负责，不走这组命令。
 - `status` 只读：报告端点、控制台端点、`FC_MINIO_AUTOSTART` 取值、健康探测结果与 pid 记录（若有）。不配置任何路径也能正常返回。
 - `ensure` 是启动钩子：开关为 `false` 时返回 `{"action":"skipped","reason":"FC_MINIO_AUTOSTART is not enabled"}` 并且**退出码 0**；已健康时返回 `{"action":"noop"}`；否则拉起并返回 `{"action":"started",...}`。
 - `start` 无条件尝试拉起：`FC_MINIO_BINARY` / `FC_MINIO_DATA_DIR` / 两个凭据任一缺失时报 `E_CONFIG`（退出码 3）并在 `details.field` 点名缺哪个键；二进制不存在报 `E_DEPENDENCY`。
@@ -415,7 +415,7 @@ fcoffer minio stop   [--wait 5]
 
 ## 5. 错误码
 
-错误码是 CLI / REST / MCP 共用的稳定契约：格式 `^E_[A-Z0-9_]{2,48}$`，只增不改（DEC-0007）。调用方遇到未知错误码一律按 `E_INTERNAL` 处理。
+错误码是 CLI / REST / MCP 共用的稳定契约：格式 `^E_[A-Z0-9_]{2,48}$`，只增不改。调用方遇到未知错误码一律按 `E_INTERNAL` 处理。
 
 | 错误码 | CLI 退出码 | REST HTTP | 含义 |
 | --- | --- | --- | --- |
