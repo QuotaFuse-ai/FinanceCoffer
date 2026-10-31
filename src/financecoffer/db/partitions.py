@@ -9,7 +9,7 @@ current month and ``--ahead`` months without waiting for a failed insert.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from financecoffer.core.errors import InvalidArgumentError
@@ -107,11 +107,17 @@ def ensure_partitions(
     ahead: int = 3,
     table: str = "ods.stock_raw_data",
 ) -> list[dict[str, Any]]:
-    """Ensure partitions for ``start_month`` through ``start_month + ahead``."""
+    """Ensure partitions for ``start_month`` through ``start_month + ahead``.
+
+    ``start_month`` defaults to the current month in UTC: the partition bounds
+    are UTC-pinned, so a local ``date.today()`` on a non-UTC host can name the
+    next month while the current UTC month still has events to land in.
+    """
 
     if ahead < 0:
         raise InvalidArgumentError("--ahead must be >= 0", details={"ahead": ahead})
-    start = date((start_month or date.today()).year, (start_month or date.today()).month, 1)
+    month_start = start_month or datetime.now(UTC).date()
+    start = date(month_start.year, month_start.month, 1)
     results: list[dict[str, Any]] = []
     year, month = start.year, start.month
     for _ in range(ahead + 1):

@@ -1,8 +1,9 @@
 """ODS landing, raw round-trip and replay against a migrated PostgreSQL (T-005).
 
 The scratch database created by ``migrated_warehouse`` carries partitions for
-the current UTC month and the following three, so the happy path uses October
-2026 and the "missing partition" case uses January 2099.
+the current UTC month, the following three, and every month the suite pins
+``fetch_time`` to, so the happy path uses October 2026 and the "missing
+partition" case uses January 2099.
 """
 
 from __future__ import annotations
