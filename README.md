@@ -194,6 +194,7 @@ FinanceCoffer/
 │   ├── integration/      # 真实 PostgreSQL 集成测试
 │   └── security/         # 检索边界与合规用例
 ├── scripts/              # 本地 embedding 服务与启动脚本
+├── tools/                # 仓库自检脚本（公开文档内容检查）
 ├── skills/financecoffer/ # Agent Skill（SKILL.md）
 ├── config/               # 运行时配置目录
 └── deploy/               # 容器编排与部署清单
@@ -234,6 +235,18 @@ FinanceCoffer/
 
 > 开发记录、决策日志、需求追踪与内部验收材料不随公开仓库发布。
 
-## 10. 许可与免责
+## 10. 公开文档卫生检查
+
+本仓库是公开仓库：`docs/`、`deploy/` 与根 `README.md` 中不出现内部任务编号（工单号、排期号）、团队称谓与本机绝对路径；指代「谁来做、谁验收」时改为职能或环节口径。判定口径见 [`docs/decisions/DEC-0025-public-docs-carry-no-internal-ids-or-team-names.md`](docs/decisions/DEC-0025-public-docs-carry-no-internal-ids-or-team-names.md)，`docs/decisions/` 作为只增不改的历史记录整体豁免。
+
+规则由 [`tools/check_public_docs.py`](tools/check_public_docs.py) 机器执行，命中即非零退出并逐行打印 `文件:行: 命中原因`。本地复检一行命令：
+
+```bash
+python tools/check_public_docs.py
+```
+
+同一个脚本挂在提交前钩子上（`.pre-commit-config.yaml`），装一次即生效：`pre-commit install`。词表与豁免路径都是脚本内的常量，发现新的写法直接追加即可。
+
+## 11. 许可与免责
 
 代码采用 Apache-2.0。FinanceCoffer 只分发代码与存储结构，不分发行情数据；数据合规义务由上游数据源与使用方承担。
