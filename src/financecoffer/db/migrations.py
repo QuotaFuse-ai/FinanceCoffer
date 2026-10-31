@@ -20,7 +20,7 @@ import hashlib
 import re
 import time
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -403,7 +403,7 @@ class MigrationRunner:
                     )
 
                 if create_partitions and target >= 1:
-                    rows = ensure_partitions(conn, start_month=date.today(), ahead=ahead_months)
+                    rows = ensure_partitions(conn, ahead=ahead_months)
                     partitions = [row["partition"] for row in rows]
                     created = [row["partition"] for row in rows if row["created"]]
             finally:

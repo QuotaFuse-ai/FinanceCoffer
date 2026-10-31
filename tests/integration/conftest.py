@@ -10,18 +10,38 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 
 import pytest
 
 from financecoffer.db import MigrationRunner, connect
+from financecoffer.db.partitions import ensure_partitions, parse_month
 
 MAINTENANCE_DSN = os.environ.get(
     "FC_TEST_DB_URL", "postgresql://fcoffer:fcoffer@127.0.0.1:5432/postgres"
 )
 
+#: The months the fixtures pin ``fetch_time`` to. ``db migrate`` only pre-creates
+#: the current UTC month and the months ahead, so a suite replaying a fixed
+#: timeline has to create the months that timeline lands in itself -- otherwise
+#: the gate turns red the moment the calendar leaves the fixture month.
+FIXTURE_MONTHS: tuple[str, ...] = ("2026-10",)
+
 
 def _admin_connect():  # type: ignore[no-untyped-def]
     return connect(MAINTENANCE_DSN, timeout=5)
+
+
+def ensure_suite_partitions(dsn: str) -> None:
+    """Create every ODS month this suite can write into."""
+
+    with connect(dsn, timeout=10) as conn:
+        # Rows inserted with ``now()`` land in the current UTC month; ask for it
+        # explicitly so the suite does not depend on where the host clock sits
+        # relative to UTC.
+        ensure_partitions(conn, start_month=datetime.now(UTC).date(), ahead=3)
+        for value in FIXTURE_MONTHS:
+            ensure_partitions(conn, start_month=parse_month(value), ahead=0)
 
 
 @pytest.fixture(scope="session")
@@ -45,6 +65,7 @@ def migrated_warehouse() -> Iterator[str]:
     dsn = MAINTENANCE_DSN.rsplit("/", 1)[0] + f"/{name}"
     try:
         MigrationRunner(dsn, timeout=10).apply()
+        ensure_suite_partitions(dsn)
         yield dsn
     finally:
         cleanup = _admin_connect()
