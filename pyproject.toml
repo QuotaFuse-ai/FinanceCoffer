@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "financecoffer"
-dynamic = ["version"]
+# 版本唯一真源。``src/financecoffer/__init__.py`` 从安装元数据回读，不再手写第二份。
+version = "0.1.1"
 description = "FinanceCoffer - financial data warehouse and hybrid retrieval for AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -91,9 +92,6 @@ fcoffer = "financecoffer.cli:main"
 
 [project.urls]
 Documentation = "https://github.com/QuotaFuse-ai/FinanceCoffer#readme"
-
-[tool.setuptools.dynamic]
-version = { attr = "financecoffer.__version__" }
 
 [tool.setuptools]
 package-dir = { "" = "src" }
